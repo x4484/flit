@@ -8,6 +8,8 @@
     <string>Flit</string>
     <key>CFBundleIdentifier</key>
     <string>com.ranihaddad.flit</string>
+    <key>CFBundleIconFile</key>
+    <string>Flit.icns</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -18,8 +20,12 @@
     <string>0.1.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.productivity</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026 Flit contributors. Released under the MIT License.</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSPrincipalClass</key>
