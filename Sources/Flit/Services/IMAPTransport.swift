@@ -68,7 +68,7 @@ enum IMAPTransportError: Error, LocalizedError {
 
 final class IMAPTransport: @unchecked Sendable {
   private static let maximumLineBytes = 1_048_576
-  private static let maximumLiteralBytes = 262_144
+  private static let maximumLiteralBytes = 1_048_576
   private static let maximumResponsesPerCommand = 2_048
 
   private let host: NWEndpoint.Host

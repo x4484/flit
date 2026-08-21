@@ -238,6 +238,127 @@ actor MailStore {
     }
   }
 
+  func inboxMessageStates(
+    accountID: Int64,
+    afterID: Int64? = nil,
+    limit: Int = 100
+  ) throws -> [LocalInboxMessageState] {
+    let statement = try database.prepare(
+      """
+      SELECT id, remote_id, remote_uid, uid_validity, flags
+      FROM messages
+      WHERE account_id = ? AND mailbox_state = ? AND id > ?
+      ORDER BY id
+      LIMIT ?
+      """)
+    try statement.bind(accountID, at: 1)
+    try statement.bind(MailboxState.inbox.rawValue, at: 2)
+    try statement.bind(afterID ?? 0, at: 3)
+    try statement.bind(Int64(limit), at: 4)
+
+    var messages: [LocalInboxMessageState] = []
+    while try statement.step() {
+      messages.append(
+        LocalInboxMessageState(
+          id: statement.integer(at: 0),
+          remoteID: statement.text(at: 1),
+          remoteUID: statement.optionalInteger(at: 2),
+          uidValidity: statement.optionalInteger(at: 3),
+          isRead: statement.integer(at: 4) & 1 == 1
+        ))
+    }
+    return messages
+  }
+
+  func applyInboxReconciliation(
+    _ result: InboxReconciliationResult,
+    accountID: Int64
+  ) throws {
+    var bodyPaths: [String] = []
+    try database.transaction {
+      let updateState = try database.prepare(
+        """
+        UPDATE messages
+        SET remote_uid = ?, uid_validity = ?,
+            flags = CASE
+              WHEN EXISTS (
+                SELECT 1 FROM pending_operations
+                WHERE message_id = messages.id AND operation = 2
+              ) THEN flags
+              WHEN ? = 1 THEN flags | 1
+              ELSE flags & ~1
+            END
+        WHERE account_id = ? AND remote_id = ? AND mailbox_state = ?
+        """)
+      for message in result.messages {
+        try updateState.bind(message.remoteUID, at: 1)
+        try updateState.bind(message.uidValidity, at: 2)
+        try updateState.bind(message.isRead ? Int32(1) : Int32(0), at: 3)
+        try updateState.bind(accountID, at: 4)
+        try updateState.bind(message.remoteID, at: 5)
+        try updateState.bind(MailboxState.inbox.rawValue, at: 6)
+        try updateState.step()
+        try updateState.reset()
+      }
+
+      let current = try database.prepare(
+        """
+        SELECT id, body_path FROM messages
+        WHERE account_id = ? AND remote_id = ? AND mailbox_state = ?
+        """)
+      let move = try database.prepare(
+        """
+        UPDATE messages
+        SET mailbox_state = ?, body_path = NULL, summary = NULL
+        WHERE account_id = ? AND remote_id = ? AND mailbox_state = ?
+        """)
+      let delete = try database.prepare(
+        "DELETE FROM messages WHERE id = ? AND mailbox_state = ?")
+      let discardReadOperation = try database.prepare(
+        "DELETE FROM pending_operations WHERE message_id = ? AND operation = 2")
+
+      for removal in result.removals {
+        try current.bind(accountID, at: 1)
+        try current.bind(removal.remoteID, at: 2)
+        try current.bind(MailboxState.inbox.rawValue, at: 3)
+        var messageID: Int64?
+        if try current.step() {
+          messageID = current.integer(at: 0)
+          if let bodyPath = current.optionalText(at: 1) {
+            bodyPaths.append(bodyPath)
+          }
+        }
+        try current.reset()
+        guard let messageID else { continue }
+
+        switch removal.destination {
+        case .archive, .trash:
+          try discardReadOperation.bind(messageID, at: 1)
+          try discardReadOperation.step()
+          try discardReadOperation.reset()
+
+          let mailboxState: MailboxState =
+            removal.destination == .archive ? .archive : .trash
+          try move.bind(mailboxState.rawValue, at: 1)
+          try move.bind(accountID, at: 2)
+          try move.bind(removal.remoteID, at: 3)
+          try move.bind(MailboxState.inbox.rawValue, at: 4)
+          try move.step()
+          try move.reset()
+        case .delete:
+          try delete.bind(messageID, at: 1)
+          try delete.bind(MailboxState.inbox.rawValue, at: 2)
+          try delete.step()
+          try delete.reset()
+        }
+      }
+    }
+
+    for bodyPath in bodyPaths {
+      try? FileManager.default.removeItem(atPath: bodyPath)
+    }
+  }
+
   func inboxCount() throws -> Int {
     let statement = try database.prepare(
       "SELECT COUNT(*) FROM messages WHERE mailbox_state = ?")

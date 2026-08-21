@@ -12,6 +12,47 @@ struct GmailOperationTests {
   }
 
   @Test
+  func reconciliationFindsMessagesRemovedFromTheRemoteInbox() {
+    let local = [
+      LocalInboxMessageState(
+        id: 1, remoteID: "1001", remoteUID: 71, uidValidity: 9, isRead: false),
+      LocalInboxMessageState(
+        id: 2, remoteID: "1002", remoteUID: 72, uidValidity: 9, isRead: false),
+    ]
+    let remote = [
+      RemoteInboxMessageState(
+        remoteID: "1002", remoteUID: 72, uidValidity: 9, isRead: true)
+    ]
+
+    let result = GmailIMAPProvider.reconciliation(
+      localMessages: local,
+      remoteStates: remote
+    )
+
+    #expect(result.messages == remote)
+    #expect(
+      result.removals == [
+        RemoteInboxRemoval(remoteID: "1001", destination: .archive)
+      ])
+  }
+
+  @Test
+  func classifiesRemoteMovesAndPermanentDeletions() {
+    let removals = GmailIMAPProvider.classifiedRemovals(
+      missingRemoteIDs: ["1003", "1002", "1001"],
+      trashRemoteIDs: ["1002"],
+      allMailRemoteIDs: ["1001"]
+    )
+
+    #expect(
+      removals == [
+        RemoteInboxRemoval(remoteID: "1001", destination: .archive),
+        RemoteInboxRemoval(remoteID: "1002", destination: .trash),
+        RemoteInboxRemoval(remoteID: "1003", destination: .delete),
+      ])
+  }
+
+  @Test
   func trashMovesTheMessageIntoGmailTrash() {
     #expect(
       GmailIMAPProvider.mailboxMoveCommand(kind: .trash, remoteUID: 76)

@@ -210,6 +210,87 @@ struct MailStoreTests {
   }
 
   @Test
+  func remoteReconciliationUpdatesFlagsAndRemovesMessagesMissingFromInbox() async throws {
+    let context = try await makeStore(provider: "gmail")
+    defer { context.cleanup() }
+
+    let retainedID = try await context.store.addMessage(
+      NewMessage(
+        accountID: context.accountID, remoteID: "remote-retained", remoteUID: 41,
+        uidValidity: 7, receivedAt: 1_700_000_001, sender: "Retained sender",
+        recipients: "me@example.com", cc: "", internetMessageID: "",
+        subject: "Retained message", preview: "", isRead: false,
+        mailboxState: .inbox, bodyPath: nil
+      ))
+    let removedBody = context.directory.appendingPathComponent("removed-body.html")
+    try Data("<p>Removed</p>".utf8).write(to: removedBody)
+    let removedID = try await context.store.addMessage(
+      NewMessage(
+        accountID: context.accountID, remoteID: "remote-removed", remoteUID: 42,
+        uidValidity: 7, receivedAt: 1_700_000_000, sender: "Removed sender",
+        recipients: "me@example.com", cc: "", internetMessageID: "",
+        subject: "Removed message", preview: "", isRead: false,
+        mailboxState: .inbox, bodyPath: removedBody.path
+      ))
+    #expect(try await context.store.saveSummary("Delete this summary.", for: removedID))
+
+    let localStates = try await context.store.inboxMessageStates(accountID: context.accountID)
+    #expect(localStates.map(\.id) == [retainedID, removedID])
+
+    try await context.store.applyInboxReconciliation(
+      InboxReconciliationResult(
+        messages: [
+          RemoteInboxMessageState(
+            remoteID: "remote-retained", remoteUID: 41, uidValidity: 7, isRead: true)
+        ],
+        removals: [
+          RemoteInboxRemoval(remoteID: "remote-removed", destination: .archive)
+        ]
+      ),
+      accountID: context.accountID
+    )
+
+    let inbox = try await context.store.fetchInbox()
+    #expect(inbox.map(\.id) == [retainedID])
+    #expect(inbox.first?.isRead == true)
+    let removed = try #require(try await context.store.search("Removed").first)
+    #expect(removed.mailboxState == .archive)
+    #expect(removed.bodyPath == nil)
+    #expect(try await context.store.summary(for: removedID) == nil)
+    #expect(!FileManager.default.fileExists(atPath: removedBody.path))
+  }
+
+  @Test
+  func remoteUnreadStateDoesNotOverridePendingLocalRead() async throws {
+    let context = try await makeStore(provider: "gmail")
+    defer { context.cleanup() }
+
+    let messageID = try await context.store.addMessage(
+      NewMessage(
+        accountID: context.accountID, remoteID: "pending-read", remoteUID: 51,
+        uidValidity: 8, receivedAt: 1_700_000_000, sender: "Sender",
+        recipients: "me@example.com", cc: "", internetMessageID: "",
+        subject: "Pending read", preview: "", isRead: false,
+        mailboxState: .inbox, bodyPath: nil
+      ))
+    try await context.store.markRead(messageID: messageID)
+
+    try await context.store.applyInboxReconciliation(
+      InboxReconciliationResult(
+        messages: [
+          RemoteInboxMessageState(
+            remoteID: "pending-read", remoteUID: 51, uidValidity: 8, isRead: false)
+        ],
+        removals: []
+      ),
+      accountID: context.accountID
+    )
+
+    #expect(try await context.store.fetchInbox().first?.isRead == true)
+    #expect(try await context.store.pendingOperations(accountID: context.accountID).count == 1)
+  }
+
+  @Test
   func bodyCachePruningKeepsOnlyTheMostRecentFiles() async throws {
     let context = try await makeStore()
     defer { context.cleanup() }

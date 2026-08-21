@@ -91,6 +91,117 @@ actor GmailIMAPProvider: MailProvider {
     }
   }
 
+  func reconcileInbox(_ messages: [LocalInboxMessageState]) async throws
+    -> InboxReconciliationResult
+  {
+    guard !messages.isEmpty else {
+      return InboxReconciliationResult(messages: [], removals: [])
+    }
+
+    await acquireSession()
+    defer { releaseSession() }
+    try Task.checkCancellation()
+    let transport = try await authenticatedTransport()
+
+    do {
+      let selected = try await transport.execute("EXAMINE \"INBOX\"")
+      let mailbox = try GmailIMAPParser.mailboxState(from: selected)
+      let currentUIDMessages = messages.filter {
+        $0.uidValidity == mailbox.uidValidity
+          && $0.remoteUID.map { (1...Int64(UInt32.max)).contains($0) } == true
+      }
+      let currentRemoteIDs = Set(currentUIDMessages.map(\.remoteID))
+      let staleUIDMessages = messages.filter {
+        !currentRemoteIDs.contains($0.remoteID)
+      }
+
+      let currentStates = try await fetchRemoteStates(
+        uids: currentUIDMessages.compactMap(\.remoteUID),
+        uidValidity: mailbox.uidValidity,
+        transport: transport
+      )
+      let currentResult = Self.reconciliation(
+        localMessages: currentUIDMessages,
+        remoteStates: currentStates
+      )
+      var reconciledMessages = currentResult.messages
+      var missingRemoteIDs = currentResult.removals.map(\.remoteID)
+
+      for message in staleUIDMessages {
+        try Task.checkCancellation()
+        guard !message.remoteID.isEmpty, message.remoteID.allSatisfy(\.isNumber) else {
+          continue
+        }
+        let search = try await transport.execute("UID SEARCH X-GM-MSGID \(message.remoteID)")
+        guard let uid = GmailIMAPParser.searchedUIDs(from: search, greaterThan: 0).first else {
+          missingRemoteIDs.append(message.remoteID)
+          continue
+        }
+        let states = try await fetchRemoteStates(
+          uids: [uid],
+          uidValidity: mailbox.uidValidity,
+          transport: transport
+        )
+        if let state = states.first(where: { $0.remoteID == message.remoteID }) {
+          reconciledMessages.append(state)
+        } else {
+          missingRemoteIDs.append(message.remoteID)
+        }
+      }
+
+      reconciledMessages = Array(
+        Dictionary(
+          reconciledMessages.map { ($0.remoteID, $0) },
+          uniquingKeysWith: { _, latest in latest }
+        ).values
+      ).sorted { $0.remoteUID < $1.remoteUID }
+      let removals = try await classifyRemovals(
+        remoteIDs: Array(Set(missingRemoteIDs)).sorted(),
+        transport: transport
+      )
+      return InboxReconciliationResult(
+        messages: reconciledMessages,
+        removals: removals
+      )
+    } catch {
+      invalidateTransport(transport)
+      throw error
+    }
+  }
+
+  static func reconciliation(
+    localMessages: [LocalInboxMessageState],
+    remoteStates: [RemoteInboxMessageState]
+  ) -> InboxReconciliationResult {
+    let presentRemoteIDs = Set(remoteStates.map(\.remoteID))
+    return InboxReconciliationResult(
+      messages: remoteStates,
+      removals: localMessages.map(\.remoteID).filter {
+        $0.allSatisfy(\.isNumber) && !presentRemoteIDs.contains($0)
+      }.map {
+        RemoteInboxRemoval(remoteID: $0, destination: .archive)
+      }
+    )
+  }
+
+  static func classifiedRemovals(
+    missingRemoteIDs: [String],
+    trashRemoteIDs: Set<String>,
+    allMailRemoteIDs: Set<String>
+  ) -> [RemoteInboxRemoval] {
+    Array(Set(missingRemoteIDs)).sorted().map { remoteID in
+      let destination: RemoteRemovalDestination
+      if trashRemoteIDs.contains(remoteID) {
+        destination = .trash
+      } else if allMailRemoteIDs.contains(remoteID) {
+        destination = .archive
+      } else {
+        destination = .delete
+      }
+      return RemoteInboxRemoval(remoteID: remoteID, destination: destination)
+    }
+  }
+
   func fetchPlainTextBody(remoteID: String) async throws -> URL {
     await acquireSession()
     defer { releaseSession() }
@@ -358,6 +469,74 @@ actor GmailIMAPProvider: MailProvider {
       uidValidity: uidValidity,
       transport: transport
     )
+  }
+
+  private func classifyRemovals(
+    remoteIDs: [String],
+    transport: IMAPTransport
+  ) async throws -> [RemoteInboxRemoval] {
+    guard !remoteIDs.isEmpty else { return [] }
+
+    let trashRemoteIDs = try await remoteIDsPresent(
+      remoteIDs,
+      mailbox: "[Gmail]/Trash",
+      transport: transport
+    )
+    let notInTrash = remoteIDs.filter { !trashRemoteIDs.contains($0) }
+    let allMailRemoteIDs = try await remoteIDsPresent(
+      notInTrash,
+      mailbox: "[Gmail]/All Mail",
+      transport: transport
+    )
+    return Self.classifiedRemovals(
+      missingRemoteIDs: remoteIDs,
+      trashRemoteIDs: trashRemoteIDs,
+      allMailRemoteIDs: allMailRemoteIDs
+    )
+  }
+
+  private func remoteIDsPresent(
+    _ remoteIDs: [String],
+    mailbox: String,
+    transport: IMAPTransport
+  ) async throws -> Set<String> {
+    guard !remoteIDs.isEmpty else { return [] }
+    _ = try await transport.execute("EXAMINE \"\(mailbox)\"")
+    var present: Set<String> = []
+    for remoteID in remoteIDs where remoteID.allSatisfy(\.isNumber) {
+      try Task.checkCancellation()
+      let search = try await transport.execute("UID SEARCH X-GM-MSGID \(remoteID)")
+      if !GmailIMAPParser.searchedUIDs(from: search, greaterThan: 0).isEmpty {
+        present.insert(remoteID)
+      }
+    }
+    return present
+  }
+
+  private func fetchRemoteStates(
+    uids: [Int64],
+    uidValidity: Int64,
+    transport: IMAPTransport
+  ) async throws -> [RemoteInboxMessageState] {
+    var states: [RemoteInboxMessageState] = []
+    states.reserveCapacity(uids.count)
+
+    for batchStart in stride(from: 0, to: uids.count, by: Self.fetchBatchSize) {
+      let batchEnd = min(batchStart + Self.fetchBatchSize, uids.count)
+      let sequenceSet = uids[batchStart..<batchEnd].map(String.init).joined(separator: ",")
+      guard !sequenceSet.isEmpty else { continue }
+      let result = try await transport.execute(
+        "UID FETCH \(sequenceSet) (UID X-GM-MSGID FLAGS)")
+      for response in result.responses {
+        if let state = try GmailIMAPParser.remoteMessageState(
+          from: response,
+          uidValidity: uidValidity
+        ) {
+          states.append(state)
+        }
+      }
+    }
+    return states
   }
 
   private func fetchMetadata(

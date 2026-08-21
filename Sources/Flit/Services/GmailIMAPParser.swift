@@ -62,6 +62,26 @@ enum GmailIMAPParser {
     firstCapture(#"\bX-GM-MSGID\s+(\d+)\b"#, in: response.line)
   }
 
+  static func remoteMessageState(
+    from response: IMAPResponse,
+    uidValidity: Int64
+  ) throws -> RemoteInboxMessageState? {
+    guard response.line.uppercased().contains(" FETCH ") else { return nil }
+    guard let uidText = firstCapture(#"\bUID\s+(\d+)\b"#, in: response.line),
+      let uid = Int64(uidText),
+      let remoteID = gmailMessageID(from: response)
+    else {
+      throw GmailIMAPParserError.malformedMessage
+    }
+    let flags = firstCapture(#"\bFLAGS\s+\(([^)]*)\)"#, in: response.line) ?? ""
+    return RemoteInboxMessageState(
+      remoteID: remoteID,
+      remoteUID: uid,
+      uidValidity: uidValidity,
+      isRead: flags.uppercased().contains("\\SEEN")
+    )
+  }
+
   static func message(
     from response: IMAPResponse,
     accountID: Int64,

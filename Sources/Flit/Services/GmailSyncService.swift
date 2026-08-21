@@ -28,6 +28,7 @@ actor GmailSyncService {
       )
       let result = try await provider.syncInbox(from: account.syncCursor)
       try await store.applyInboxSync(result, accountID: account.id)
+      try await reconcileInbox(for: account, provider: provider)
       _ = try await flushPendingOperations(for: account, provider: provider)
       synchronizedMessageCount += result.messages.count
     }
@@ -95,6 +96,28 @@ actor GmailSyncService {
     )
     providers[accountID] = provider
     return provider
+  }
+
+  private func reconcileInbox(
+    for account: MailAccount,
+    provider: GmailIMAPProvider
+  ) async throws {
+    let batchSize = 100
+    var afterID: Int64?
+
+    while true {
+      let localMessages = try await store.inboxMessageStates(
+        accountID: account.id,
+        afterID: afterID,
+        limit: batchSize
+      )
+      guard !localMessages.isEmpty else { return }
+
+      let result = try await provider.reconcileInbox(localMessages)
+      try await store.applyInboxReconciliation(result, accountID: account.id)
+      afterID = localMessages.last?.id
+      if localMessages.count < batchSize { return }
+    }
   }
 
   private func flushPendingOperations(

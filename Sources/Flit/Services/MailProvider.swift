@@ -12,6 +12,37 @@ struct SyncResult: Sendable {
   let cursor: SyncCursor
 }
 
+struct LocalInboxMessageState: Sendable, Equatable {
+  let id: Int64
+  let remoteID: String
+  let remoteUID: Int64?
+  let uidValidity: Int64?
+  let isRead: Bool
+}
+
+struct RemoteInboxMessageState: Sendable, Equatable {
+  let remoteID: String
+  let remoteUID: Int64
+  let uidValidity: Int64
+  let isRead: Bool
+}
+
+enum RemoteRemovalDestination: Sendable, Equatable {
+  case archive
+  case trash
+  case delete
+}
+
+struct RemoteInboxRemoval: Sendable, Equatable {
+  let remoteID: String
+  let destination: RemoteRemovalDestination
+}
+
+struct InboxReconciliationResult: Sendable, Equatable {
+  let messages: [RemoteInboxMessageState]
+  let removals: [RemoteInboxRemoval]
+}
+
 extension SyncResult {
   static func empty(cursor: SyncCursor) -> SyncResult {
     SyncResult(messages: [], removedRemoteIDs: [], cursor: cursor)
@@ -29,6 +60,8 @@ struct OutgoingMessage: Sendable, Equatable {
 
 protocol MailProvider: Sendable {
   func syncInbox(from cursor: SyncCursor?) async throws -> SyncResult
+  func reconcileInbox(_ messages: [LocalInboxMessageState]) async throws
+    -> InboxReconciliationResult
   func fetchPlainTextBody(remoteID: String) async throws -> URL
   func markRead(remoteID: String) async throws
   func archive(remoteID: String) async throws

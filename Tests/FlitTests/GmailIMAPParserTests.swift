@@ -55,6 +55,23 @@ struct GmailIMAPParserTests {
   }
 
   @Test
+  func parsesRemoteInboxFlagsWithoutFetchingHeaders() throws {
+    let response = IMAPResponse(
+      line: "* 17 FETCH (UID 301 X-GM-MSGID 1888123412345678 FLAGS (\\Seen \\Flagged))",
+      literal: nil
+    )
+
+    let state = try #require(
+      try GmailIMAPParser.remoteMessageState(from: response, uidValidity: 44)
+    )
+
+    #expect(state.remoteID == "1888123412345678")
+    #expect(state.remoteUID == 301)
+    #expect(state.uidValidity == 44)
+    #expect(state.isRead)
+  }
+
+  @Test
   func searchTranscriptFiltersAlreadySynchronizedUIDs() {
     let result = IMAPCommandResult(responses: [
       IMAPResponse(line: "* SEARCH 98 99 101 103", literal: nil),
