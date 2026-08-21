@@ -2,7 +2,14 @@ import AppKit
 
 final class SidebarSurfaceView: NSView {
   override func draw(_ dirtyRect: NSRect) {
-    NSColor.controlBackgroundColor.withAlphaComponent(0.55).setFill()
+    NSColor.windowBackgroundColor.setFill()
+    dirtyRect.fill()
+  }
+}
+
+final class ReaderSurfaceView: NSView {
+  override func draw(_ dirtyRect: NSRect) {
+    NSColor.textBackgroundColor.setFill()
     dirtyRect.fill()
   }
 }

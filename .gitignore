@@ -7,3 +7,5 @@ xcuserdata/
 DerivedData/
 .env
 Support/GoogleOAuth.local.json
+.vercel
+.env*

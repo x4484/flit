@@ -12,6 +12,12 @@ actor MailStore {
 
     database = try SQLiteDatabase(path: path)
     try Self.migrate(database)
+    try Self.removeLegacyBodyCache(database)
+    if parentDirectory.lastPathComponent == "Flit" {
+      try? FileManager.default.removeItem(
+        at: parentDirectory.appendingPathComponent("TransientBodies", isDirectory: true)
+      )
+    }
   }
 
   func addAccount(name: String, email: String, provider: String) throws -> Int64 {
@@ -31,45 +37,395 @@ actor MailStore {
     return statement.integer(at: 0)
   }
 
+  func accounts(provider: String? = nil) throws -> [MailAccount] {
+    let statement: SQLiteStatement
+    if let provider {
+      statement = try database.prepare(
+        """
+        SELECT id, name, email, provider, uid_validity, highest_uid, highest_modseq
+        FROM accounts
+        WHERE provider = ?
+        ORDER BY id
+        """)
+      try statement.bind(provider, at: 1)
+    } else {
+      statement = try database.prepare(
+        """
+        SELECT id, name, email, provider, uid_validity, highest_uid, highest_modseq
+        FROM accounts
+        ORDER BY id
+        """)
+    }
+
+    var accounts: [MailAccount] = []
+    while try statement.step() {
+      let uidValidity = statement.optionalInteger(at: 4)
+      let highestUID = statement.optionalInteger(at: 5)
+      let highestModSequence = statement.optionalText(at: 6)
+      let cursor =
+        uidValidity == nil && highestUID == nil && highestModSequence == nil
+        ? nil
+        : SyncCursor(
+          uidValidity: uidValidity,
+          highestUID: highestUID,
+          highestModSequence: highestModSequence
+        )
+      accounts.append(
+        MailAccount(
+          id: statement.integer(at: 0),
+          name: statement.text(at: 1),
+          email: statement.text(at: 2),
+          provider: statement.text(at: 3),
+          syncCursor: cursor
+        ))
+    }
+    return accounts
+  }
+
   @discardableResult
   func addMessage(_ message: NewMessage) throws -> Int64 {
+    try upsertMessage(message)
+  }
+
+  func applyInboxSync(_ result: SyncResult, accountID: Int64) throws {
+    try database.transaction {
+      for message in result.messages where message.accountID == accountID {
+        _ = try upsertMessage(message)
+      }
+
+      if !result.removedRemoteIDs.isEmpty {
+        let removed = try database.prepare(
+          """
+          UPDATE messages
+          SET mailbox_state = ?, body_path = NULL, summary = NULL
+          WHERE account_id = ? AND remote_id = ? AND mailbox_state = ?
+          """)
+        for remoteID in result.removedRemoteIDs {
+          try removed.bind(MailboxState.archive.rawValue, at: 1)
+          try removed.bind(accountID, at: 2)
+          try removed.bind(remoteID, at: 3)
+          try removed.bind(MailboxState.inbox.rawValue, at: 4)
+          try removed.step()
+          try removed.reset()
+        }
+      }
+
+      let cursor = try database.prepare(
+        """
+        UPDATE accounts
+        SET uid_validity = ?, highest_uid = ?, highest_modseq = ?
+        WHERE id = ?
+        """)
+      try cursor.bind(result.cursor.uidValidity, at: 1)
+      try cursor.bind(result.cursor.highestUID, at: 2)
+      try cursor.bind(result.cursor.highestModSequence, at: 3)
+      try cursor.bind(accountID, at: 4)
+      try cursor.step()
+    }
+  }
+
+  func pendingOperations(
+    accountID: Int64,
+    limit: Int = 100
+  ) throws -> [PendingMailOperation] {
     let statement = try database.prepare(
       """
-      INSERT INTO messages (
-          account_id, remote_id, remote_uid, uid_validity, received_at,
-          sender, recipients, subject, preview, flags, mailbox_state, body_path
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(account_id, remote_id) DO UPDATE SET
-          remote_uid = excluded.remote_uid,
-          uid_validity = excluded.uid_validity,
-          received_at = excluded.received_at,
-          sender = excluded.sender,
-          recipients = excluded.recipients,
-          subject = excluded.subject,
-          preview = excluded.preview,
-          flags = excluded.flags,
-          mailbox_state = excluded.mailbox_state,
-          body_path = excluded.body_path
-      RETURNING id
+      SELECT p.id, p.message_id, m.account_id, a.email, m.remote_id,
+             m.remote_uid, m.uid_validity, p.operation, p.attempts
+      FROM pending_operations p
+      JOIN messages m ON m.id = p.message_id
+      JOIN accounts a ON a.id = m.account_id
+      WHERE m.account_id = ? AND a.provider = 'gmail' AND m.remote_uid IS NOT NULL
+      ORDER BY p.id
+      LIMIT ?
       """)
+    try statement.bind(accountID, at: 1)
+    try statement.bind(Int64(limit), at: 2)
 
-    try statement.bind(message.accountID, at: 1)
-    try statement.bind(message.remoteID, at: 2)
-    try statement.bind(message.remoteUID, at: 3)
-    try statement.bind(message.uidValidity, at: 4)
-    try statement.bind(message.receivedAt, at: 5)
-    try statement.bind(message.sender, at: 6)
-    try statement.bind(message.recipients, at: 7)
-    try statement.bind(message.subject, at: 8)
-    try statement.bind(message.preview, at: 9)
-    try statement.bind(message.isRead ? Int32(1) : Int32(0), at: 10)
-    try statement.bind(message.mailboxState.rawValue, at: 11)
-    try statement.bind(message.bodyPath, at: 12)
-
-    guard try statement.step() else {
-      throw DatabaseError.step("Message insert returned no identifier")
+    var operations: [PendingMailOperation] = []
+    while try statement.step() {
+      guard let kind = PendingOperationKind(rawValue: Int32(statement.integer(at: 7))) else {
+        continue
+      }
+      operations.append(
+        PendingMailOperation(
+          id: statement.integer(at: 0),
+          messageID: statement.integer(at: 1),
+          accountID: statement.integer(at: 2),
+          accountEmail: statement.text(at: 3),
+          remoteID: statement.text(at: 4),
+          remoteUID: statement.integer(at: 5),
+          uidValidity: statement.optionalInteger(at: 6),
+          kind: kind,
+          attempts: Int(statement.integer(at: 8))
+        ))
     }
+    return operations
+  }
+
+  func completePendingOperation(id: Int64) throws {
+    let statement = try database.prepare("DELETE FROM pending_operations WHERE id = ?")
+    try statement.bind(id, at: 1)
+    try statement.step()
+  }
+
+  func recordPendingOperationFailure(id: Int64) throws {
+    let statement = try database.prepare(
+      "UPDATE pending_operations SET attempts = attempts + 1 WHERE id = ?")
+    try statement.bind(id, at: 1)
+    try statement.step()
+  }
+
+  func remoteUID(messageID: Int64, mailboxState: MailboxState) throws -> Int64? {
+    let statement = try database.prepare(
+      "SELECT remote_uid FROM message_locations WHERE message_id = ? AND mailbox_state = ?")
+    try statement.bind(messageID, at: 1)
+    try statement.bind(mailboxState.rawValue, at: 2)
+    guard try statement.step() else { return nil }
     return statement.integer(at: 0)
+  }
+
+  func cacheBody(at path: String, messageID: Int64) throws -> Bool {
+    let current = try database.prepare("SELECT mailbox_state FROM messages WHERE id = ?")
+    try current.bind(messageID, at: 1)
+    guard try current.step(), current.integer(at: 0) == Int64(MailboxState.inbox.rawValue) else {
+      return false
+    }
+
+    let update = try database.prepare("UPDATE messages SET body_path = ? WHERE id = ?")
+    try update.bind(path, at: 1)
+    try update.bind(messageID, at: 2)
+    try update.step()
+    return true
+  }
+
+  @discardableResult
+  func savePreview(_ preview: String, for messageID: Int64) throws -> Bool {
+    guard !preview.isEmpty else { return false }
+    let statement = try database.prepare(
+      "UPDATE messages SET preview = ? WHERE id = ? AND preview = ''")
+    try statement.bind(preview, at: 1)
+    try statement.bind(messageID, at: 2)
+    try statement.step()
+    return database.changedRowCount > 0
+  }
+
+  func summary(for messageID: Int64) throws -> String? {
+    let statement = try database.prepare("SELECT summary FROM messages WHERE id = ?")
+    try statement.bind(messageID, at: 1)
+    guard try statement.step() else { return nil }
+    return statement.optionalText(at: 0)
+  }
+
+  @discardableResult
+  func saveSummary(_ summary: String, for messageID: Int64) throws -> Bool {
+    let statement = try database.prepare(
+      "UPDATE messages SET summary = ? WHERE id = ? AND mailbox_state = ?")
+    try statement.bind(summary, at: 1)
+    try statement.bind(messageID, at: 2)
+    try statement.bind(MailboxState.inbox.rawValue, at: 3)
+    try statement.step()
+    return database.changedRowCount > 0
+  }
+
+  func pruneBodyCache(maximumFiles: Int) throws {
+    let query = try database.prepare(
+      "SELECT id, body_path FROM messages WHERE body_path IS NOT NULL")
+    var existing: [(id: Int64, path: String, modifiedAt: Date)] = []
+    var stale: [(id: Int64, path: String)] = []
+
+    while try query.step() {
+      let id = query.integer(at: 0)
+      let path = query.text(at: 1)
+      guard FileManager.default.fileExists(atPath: path) else {
+        stale.append((id, path))
+        continue
+      }
+      let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+      let modifiedAt = attributes?[.modificationDate] as? Date ?? .distantPast
+      existing.append((id, path, modifiedAt))
+    }
+
+    existing.sort {
+      if $0.modifiedAt == $1.modifiedAt { return $0.id > $1.id }
+      return $0.modifiedAt > $1.modifiedAt
+    }
+    let overflow = existing.dropFirst(max(0, maximumFiles)).map { ($0.id, $0.path) }
+    let entriesToRemove = stale + overflow
+    guard !entriesToRemove.isEmpty else { return }
+
+    let clear = try database.prepare("UPDATE messages SET body_path = NULL WHERE id = ?")
+    for entry in entriesToRemove {
+      try? FileManager.default.removeItem(atPath: entry.path)
+      try clear.bind(entry.id, at: 1)
+      try clear.step()
+      try clear.reset()
+    }
+  }
+
+  func oldestInboxRemoteUID(accountID: Int64) throws -> Int64? {
+    let statement = try database.prepare(
+      """
+      SELECT MIN(remote_uid) FROM messages
+      WHERE account_id = ? AND mailbox_state = ? AND remote_uid IS NOT NULL
+      """)
+    try statement.bind(accountID, at: 1)
+    try statement.bind(MailboxState.inbox.rawValue, at: 2)
+    guard try statement.step() else { return nil }
+    return statement.optionalInteger(at: 0)
+  }
+
+  func applyInboxDiscovery(_ messages: [NewMessage], accountID: Int64) throws {
+    try database.transaction {
+      for message in messages where message.accountID == accountID {
+        _ = try upsertMessage(message)
+      }
+    }
+  }
+
+  func inboxMessageStates(
+    accountID: Int64,
+    afterID: Int64? = nil,
+    limit: Int = 100
+  ) throws -> [LocalInboxMessageState] {
+    let statement = try database.prepare(
+      """
+      SELECT id, remote_id, remote_uid, uid_validity, flags
+      FROM messages
+      WHERE account_id = ? AND mailbox_state = ? AND id > ?
+      ORDER BY id
+      LIMIT ?
+      """)
+    try statement.bind(accountID, at: 1)
+    try statement.bind(MailboxState.inbox.rawValue, at: 2)
+    try statement.bind(afterID ?? 0, at: 3)
+    try statement.bind(Int64(limit), at: 4)
+
+    var messages: [LocalInboxMessageState] = []
+    while try statement.step() {
+      messages.append(
+        LocalInboxMessageState(
+          id: statement.integer(at: 0),
+          remoteID: statement.text(at: 1),
+          remoteUID: statement.optionalInteger(at: 2),
+          uidValidity: statement.optionalInteger(at: 3),
+          isRead: statement.integer(at: 4) & 1 == 1
+        ))
+    }
+    return messages
+  }
+
+  func applyInboxReconciliation(
+    _ result: InboxReconciliationResult,
+    accountID: Int64
+  ) throws {
+    var bodyPaths: [String] = []
+    try database.transaction {
+      let updateState = try database.prepare(
+        """
+        UPDATE messages
+        SET remote_uid = ?, uid_validity = ?,
+            flags = CASE
+              WHEN EXISTS (
+                SELECT 1 FROM pending_operations
+                WHERE message_id = messages.id AND operation = 2
+              ) THEN flags
+              WHEN ? = 1 THEN flags | 1
+              ELSE flags & ~1
+            END
+        WHERE account_id = ? AND remote_id = ? AND mailbox_state = ?
+        """)
+      let updateLocation = try database.prepare(
+        """
+        INSERT INTO message_locations (message_id, mailbox_state, remote_uid, uid_validity)
+        SELECT id, ?, ?, ? FROM messages WHERE account_id = ? AND remote_id = ?
+        ON CONFLICT(message_id, mailbox_state) DO UPDATE SET
+          remote_uid = excluded.remote_uid,
+          uid_validity = excluded.uid_validity
+        """)
+      for message in result.messages {
+        try updateState.bind(message.remoteUID, at: 1)
+        try updateState.bind(message.uidValidity, at: 2)
+        try updateState.bind(message.isRead ? Int32(1) : Int32(0), at: 3)
+        try updateState.bind(accountID, at: 4)
+        try updateState.bind(message.remoteID, at: 5)
+        try updateState.bind(MailboxState.inbox.rawValue, at: 6)
+        try updateState.step()
+        try updateState.reset()
+
+        try updateLocation.bind(MailboxState.inbox.rawValue, at: 1)
+        try updateLocation.bind(message.remoteUID, at: 2)
+        try updateLocation.bind(message.uidValidity, at: 3)
+        try updateLocation.bind(accountID, at: 4)
+        try updateLocation.bind(message.remoteID, at: 5)
+        try updateLocation.step()
+        try updateLocation.reset()
+      }
+
+      let current = try database.prepare(
+        """
+        SELECT id, body_path FROM messages
+        WHERE account_id = ? AND remote_id = ? AND mailbox_state = ?
+        """)
+      let move = try database.prepare(
+        """
+        UPDATE messages
+        SET mailbox_state = ?, body_path = NULL, summary = NULL
+        WHERE account_id = ? AND remote_id = ? AND mailbox_state = ?
+        """)
+      let delete = try database.prepare(
+        "DELETE FROM messages WHERE id = ? AND mailbox_state = ?")
+      let discardReadOperation = try database.prepare(
+        "DELETE FROM pending_operations WHERE message_id = ? AND operation = 2")
+
+      for removal in result.removals {
+        try current.bind(accountID, at: 1)
+        try current.bind(removal.remoteID, at: 2)
+        try current.bind(MailboxState.inbox.rawValue, at: 3)
+        var messageID: Int64?
+        if try current.step() {
+          messageID = current.integer(at: 0)
+          if let bodyPath = current.optionalText(at: 1) {
+            bodyPaths.append(bodyPath)
+          }
+        }
+        try current.reset()
+        guard let messageID else { continue }
+
+        switch removal.destination {
+        case .archive, .trash:
+          try discardReadOperation.bind(messageID, at: 1)
+          try discardReadOperation.step()
+          try discardReadOperation.reset()
+
+          let mailboxState: MailboxState =
+            removal.destination == .archive ? .archive : .trash
+          try move.bind(mailboxState.rawValue, at: 1)
+          try move.bind(accountID, at: 2)
+          try move.bind(removal.remoteID, at: 3)
+          try move.bind(MailboxState.inbox.rawValue, at: 4)
+          try move.step()
+          try move.reset()
+        case .delete:
+          try delete.bind(messageID, at: 1)
+          try delete.bind(MailboxState.inbox.rawValue, at: 2)
+          try delete.step()
+          try delete.reset()
+        }
+      }
+    }
+
+    for bodyPath in bodyPaths {
+      try? FileManager.default.removeItem(atPath: bodyPath)
+    }
+  }
+
+  func inboxCount() throws -> Int {
+    let statement = try database.prepare(
+      "SELECT COUNT(*) FROM messages WHERE mailbox_state = ?")
+    try statement.bind(MailboxState.inbox.rawValue, at: 1)
+    guard try statement.step() else { return 0 }
+    return Int(statement.integer(at: 0))
   }
 
   func fetchInbox(after cursor: PageCursor? = nil, limit: Int = 100) throws -> [MessageSummary] {
@@ -104,6 +460,30 @@ actor MailStore {
       try statement.bind(Int64(limit), at: 2)
     }
 
+    return try readSummaries(from: statement)
+  }
+
+  func threadMessages(
+    accountID: Int64,
+    remoteThreadID: String,
+    limit: Int = 50
+  ) throws -> [MessageSummary] {
+    guard !remoteThreadID.isEmpty else { return [] }
+    let statement = try database.prepare(
+      """
+      SELECT \(Self.summaryColumns)
+      FROM messages m
+      JOIN accounts a ON a.id = m.account_id
+      WHERE m.account_id = ? AND m.thread_remote_id = ?
+        AND m.mailbox_state IN (?, ?)
+      ORDER BY m.received_at DESC, m.id DESC
+      LIMIT ?
+      """)
+    try statement.bind(accountID, at: 1)
+    try statement.bind(remoteThreadID, at: 2)
+    try statement.bind(MailboxState.inbox.rawValue, at: 3)
+    try statement.bind(MailboxState.archive.rawValue, at: 4)
+    try statement.bind(Int64(limit), at: 5)
     return try readSummaries(from: statement)
   }
 
@@ -180,6 +560,8 @@ actor MailStore {
           receivedAt: now - Int64(offset * 300),
           sender: example.0,
           recipients: "hello@example.com",
+          cc: "",
+          internetMessageID: "",
           subject: example.1,
           preview: example.2,
           isRead: offset == 2,
@@ -187,6 +569,97 @@ actor MailStore {
           bodyPath: nil
         ))
     }
+  }
+
+  private func upsertMessage(_ message: NewMessage) throws -> Int64 {
+    let statement = try database.prepare(
+      """
+      INSERT INTO messages (
+          account_id, remote_id, thread_remote_id, remote_uid, uid_validity, received_at,
+          sender, recipients, cc, internet_message_id, subject, preview, flags,
+          mailbox_state, body_path
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(account_id, remote_id) DO UPDATE SET
+          thread_remote_id = CASE
+            WHEN excluded.thread_remote_id = '' THEN messages.thread_remote_id
+            ELSE excluded.thread_remote_id
+          END,
+          remote_uid = CASE
+            WHEN messages.mailbox_state = 0 AND excluded.mailbox_state = 1
+              THEN messages.remote_uid
+            ELSE excluded.remote_uid
+          END,
+          uid_validity = CASE
+            WHEN messages.mailbox_state = 0 AND excluded.mailbox_state = 1
+              THEN messages.uid_validity
+            ELSE excluded.uid_validity
+          END,
+          received_at = excluded.received_at,
+          sender = excluded.sender,
+          recipients = excluded.recipients,
+          cc = excluded.cc,
+          internet_message_id = excluded.internet_message_id,
+          subject = excluded.subject,
+          preview = CASE
+            WHEN excluded.preview = '' THEN messages.preview
+            ELSE excluded.preview
+          END,
+          flags = CASE
+            WHEN EXISTS (
+              SELECT 1 FROM pending_operations
+              WHERE message_id = messages.id AND operation = 2
+            ) THEN messages.flags | excluded.flags
+            ELSE excluded.flags
+          END,
+          mailbox_state = CASE
+            WHEN EXISTS (
+              SELECT 1 FROM pending_operations
+              WHERE message_id = messages.id AND operation IN (0, 1)
+            ) THEN messages.mailbox_state
+            WHEN messages.mailbox_state = 0 AND excluded.mailbox_state = 1
+              THEN messages.mailbox_state
+            ELSE excluded.mailbox_state
+          END,
+          body_path = COALESCE(excluded.body_path, messages.body_path)
+      RETURNING id
+      """)
+
+    try statement.bind(message.accountID, at: 1)
+    try statement.bind(message.remoteID, at: 2)
+    try statement.bind(message.threadRemoteID, at: 3)
+    try statement.bind(message.remoteUID, at: 4)
+    try statement.bind(message.uidValidity, at: 5)
+    try statement.bind(message.receivedAt, at: 6)
+    try statement.bind(message.sender, at: 7)
+    try statement.bind(message.recipients, at: 8)
+    try statement.bind(message.cc, at: 9)
+    try statement.bind(message.internetMessageID, at: 10)
+    try statement.bind(message.subject, at: 11)
+    try statement.bind(message.preview, at: 12)
+    try statement.bind(message.isRead ? Int32(1) : Int32(0), at: 13)
+    try statement.bind(message.mailboxState.rawValue, at: 14)
+    try statement.bind(message.bodyPath, at: 15)
+
+    guard try statement.step() else {
+      throw DatabaseError.step("Message insert returned no identifier")
+    }
+    let messageID = statement.integer(at: 0)
+    if let remoteUID = message.remoteUID {
+      let location = try database.prepare(
+        """
+        INSERT INTO message_locations (message_id, mailbox_state, remote_uid, uid_validity)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(message_id, mailbox_state) DO UPDATE SET
+          remote_uid = excluded.remote_uid,
+          uid_validity = excluded.uid_validity
+        """)
+      try location.bind(messageID, at: 1)
+      try location.bind(message.mailboxState.rawValue, at: 2)
+      try location.bind(remoteUID, at: 3)
+      try location.bind(message.uidValidity, at: 4)
+      try location.step()
+    }
+    return messageID
   }
 
   private func moveLocally(
@@ -205,7 +678,7 @@ actor MailStore {
       let update = try database.prepare(
         """
         UPDATE messages
-        SET mailbox_state = ?, body_path = NULL
+        SET mailbox_state = ?, body_path = NULL, summary = NULL
         WHERE id = ?
         """)
       try update.bind(destination.rawValue, at: 1)
@@ -224,11 +697,17 @@ actor MailStore {
     let statement = try database.prepare(
       """
       INSERT INTO pending_operations (message_id, operation, created_at)
-      VALUES (?, ?, ?)
+      SELECT ?, ?, ?
+      WHERE NOT EXISTS (
+        SELECT 1 FROM pending_operations
+        WHERE message_id = ? AND operation = ?
+      )
       """)
     try statement.bind(messageID, at: 1)
     try statement.bind(operation.rawValue, at: 2)
     try statement.bind(Int64(Date().timeIntervalSince1970), at: 3)
+    try statement.bind(messageID, at: 4)
+    try statement.bind(operation.rawValue, at: 5)
     try statement.step()
   }
 
@@ -237,32 +716,36 @@ actor MailStore {
     messages.reserveCapacity(100)
 
     while try statement.step() {
-      guard let state = MailboxState(rawValue: Int32(statement.integer(at: 13))) else { continue }
+      guard let state = MailboxState(rawValue: Int32(statement.integer(at: 17))) else { continue }
       messages.append(
         MessageSummary(
           id: statement.integer(at: 0),
           accountID: statement.integer(at: 1),
           accountName: statement.text(at: 2),
           accountEmail: statement.text(at: 3),
-          remoteID: statement.text(at: 4),
-          remoteUID: statement.optionalInteger(at: 5),
-          receivedAt: statement.integer(at: 6),
-          sender: statement.text(at: 7),
-          recipients: statement.text(at: 8),
-          subject: statement.text(at: 9),
-          preview: statement.text(at: 10),
-          isRead: statement.integer(at: 11) & 1 == 1,
+          accountProvider: statement.text(at: 4),
+          remoteID: statement.text(at: 5),
+          threadRemoteID: statement.text(at: 6),
+          remoteUID: statement.optionalInteger(at: 7),
+          receivedAt: statement.integer(at: 8),
+          sender: statement.text(at: 9),
+          recipients: statement.text(at: 10),
+          cc: statement.text(at: 11),
+          internetMessageID: statement.text(at: 12),
+          subject: statement.text(at: 13),
+          preview: statement.text(at: 14),
+          isRead: statement.integer(at: 15) & 1 == 1,
           mailboxState: state,
-          bodyPath: statement.optionalText(at: 12)
+          bodyPath: statement.optionalText(at: 16)
         ))
     }
     return messages
   }
 
   private static let summaryColumns = """
-    m.id, m.account_id, a.name, a.email, m.remote_id, m.remote_uid,
-    m.received_at, m.sender, m.recipients, m.subject, m.preview,
-    m.flags, m.body_path, m.mailbox_state
+    m.id, m.account_id, a.name, a.email, a.provider, m.remote_id, m.thread_remote_id,
+    m.remote_uid, m.received_at, m.sender, m.recipients, m.cc, m.internet_message_id,
+    m.subject, m.preview, m.flags, m.body_path, m.mailbox_state
     """
 
   private static func ftsQuery(from query: String) -> String {
@@ -273,6 +756,28 @@ actor MailStore {
         return "\"\(escaped)\"*"
       }
       .joined(separator: " AND ")
+  }
+
+  private static func removeLegacyBodyCache(_ database: SQLiteDatabase) throws {
+    let legacy = try database.prepare(
+      """
+      SELECT body_path FROM messages
+      WHERE body_path IS NOT NULL AND body_path NOT LIKE '%/Bodies-v4/%'
+      """)
+    var paths: [String] = []
+    while try legacy.step() {
+      paths.append(legacy.text(at: 0))
+    }
+    guard !paths.isEmpty else { return }
+
+    for path in paths {
+      try? FileManager.default.removeItem(atPath: path)
+    }
+    try database.execute(
+      """
+      UPDATE messages SET body_path = NULL
+      WHERE body_path IS NOT NULL AND body_path NOT LIKE '%/Bodies-v4/%'
+      """)
   }
 
   private static func migrate(_ database: SQLiteDatabase) throws {
@@ -299,16 +804,20 @@ actor MailStore {
           id INTEGER PRIMARY KEY,
           account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
           remote_id TEXT NOT NULL,
+          thread_remote_id TEXT NOT NULL DEFAULT '',
           remote_uid INTEGER,
           uid_validity INTEGER,
           received_at INTEGER NOT NULL,
           sender TEXT NOT NULL DEFAULT '',
           recipients TEXT NOT NULL DEFAULT '',
+          cc TEXT NOT NULL DEFAULT '',
+          internet_message_id TEXT NOT NULL DEFAULT '',
           subject TEXT NOT NULL DEFAULT '',
           preview TEXT NOT NULL DEFAULT '',
           flags INTEGER NOT NULL DEFAULT 0,
           mailbox_state INTEGER NOT NULL DEFAULT 0,
           body_path TEXT,
+          summary TEXT,
           UNIQUE(account_id, remote_id)
       );
 
@@ -317,6 +826,14 @@ actor MailStore {
 
       CREATE INDEX IF NOT EXISTS account_sync
       ON messages(account_id, uid_validity, remote_uid);
+
+      CREATE TABLE IF NOT EXISTS message_locations (
+          message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+          mailbox_state INTEGER NOT NULL,
+          remote_uid INTEGER NOT NULL,
+          uid_validity INTEGER,
+          PRIMARY KEY(message_id, mailbox_state)
+      );
 
       CREATE TABLE IF NOT EXISTS pending_operations (
           id INTEGER PRIMARY KEY,
@@ -354,5 +871,40 @@ actor MailStore {
           VALUES (new.id, new.sender, new.recipients, new.subject, new.preview);
       END;
       """)
+
+    let columns = try database.prepare("PRAGMA table_info(messages)")
+    var columnNames: Set<String> = []
+    while try columns.step() {
+      columnNames.insert(columns.text(at: 1))
+    }
+
+    var shouldRefreshGmailMetadata = false
+    if !columnNames.contains("cc") {
+      try database.execute("ALTER TABLE messages ADD COLUMN cc TEXT NOT NULL DEFAULT ''")
+      shouldRefreshGmailMetadata = true
+    }
+    if !columnNames.contains("internet_message_id") {
+      try database.execute(
+        "ALTER TABLE messages ADD COLUMN internet_message_id TEXT NOT NULL DEFAULT ''")
+      shouldRefreshGmailMetadata = true
+    }
+    if !columnNames.contains("summary") {
+      try database.execute("ALTER TABLE messages ADD COLUMN summary TEXT")
+    }
+    if !columnNames.contains("thread_remote_id") {
+      try database.execute(
+        "ALTER TABLE messages ADD COLUMN thread_remote_id TEXT NOT NULL DEFAULT ''")
+      shouldRefreshGmailMetadata = true
+    }
+    try database.execute(
+      "CREATE INDEX IF NOT EXISTS account_thread ON messages(account_id, thread_remote_id, received_at DESC)")
+    if shouldRefreshGmailMetadata {
+      try database.execute(
+        """
+        UPDATE accounts
+        SET uid_validity = NULL, highest_uid = NULL, highest_modseq = NULL
+        WHERE provider = 'gmail'
+        """)
+    }
   }
 }

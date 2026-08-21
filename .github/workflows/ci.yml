@@ -14,3 +14,15 @@ jobs:
         run: swift build -c release
       - name: Test
         run: swift test
+      - name: Build ad-hoc app bundle
+        run: |
+          ./scripts/build-app.sh
+          codesign --verify --deep --strict dist/Flit.app
+          plutil -lint dist/Flit.app/Contents/Info.plist
+      - name: Verify generated website
+        run: |
+          python3 -m venv "$RUNNER_TEMP/flit-site-venv"
+          source "$RUNNER_TEMP/flit-site-venv/bin/activate"
+          python -m pip install --requirement site-src/requirements.txt
+          ./scripts/build-site.py
+          git diff --exit-code -- site

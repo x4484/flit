@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       mainWindowController = windowController
       windowController.showWindow(nil)
       NSApp.activate(ignoringOtherApps: true)
+      windowController.syncConnectedAccounts()
 
       if ProcessInfo.processInfo.environment["FLIT_SEED_DEMO"] == "1" {
         Task {
@@ -69,7 +70,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
     editMenu.addItem(.separator())
     editMenu.addItem(
-      withTitle: "Find", action: #selector(MainWindowController.focusSearch), keyEquivalent: "f")
+      withTitle: "Search Inbox…", action: #selector(MainWindowController.focusSearch),
+      keyEquivalent: "")
     editMenuItem.submenu = editMenu
 
     let accountsMenuItem = NSMenuItem()
@@ -86,16 +88,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     mainMenu.addItem(messageMenuItem)
     let messageMenu = NSMenu(title: "Message")
     messageMenu.addItem(
+      withTitle: "Reply", action: #selector(MainWindowController.replySelected),
+      keyEquivalent: AppKeyboardShortcuts.replyKeyEquivalent)
+    messageMenu.addItem(
+      withTitle: "Reply All", action: #selector(MainWindowController.replyAllSelected),
+      keyEquivalent: "")
+    messageMenu.addItem(
+      withTitle: "Forward", action: #selector(MainWindowController.forwardSelected),
+      keyEquivalent: AppKeyboardShortcuts.forwardKeyEquivalent)
+    messageMenu.addItem(.separator())
+    messageMenu.addItem(
       withTitle: "Archive", action: #selector(MainWindowController.archiveSelected),
-      keyEquivalent: "e")
+      keyEquivalent: AppKeyboardShortcuts.archiveKeyEquivalent)
     let trash = NSMenuItem(
       title: "Move to Trash", action: #selector(MainWindowController.trashSelected),
-      keyEquivalent: "\u{8}")
-    trash.keyEquivalentModifierMask = [.command]
+      keyEquivalent: AppKeyboardShortcuts.trashKeyEquivalent)
+    trash.keyEquivalentModifierMask = []
     messageMenu.addItem(trash)
+    messageMenu.addItem(.separator())
     messageMenu.addItem(
       withTitle: "Refresh Inbox", action: #selector(MainWindowController.refreshInbox),
-      keyEquivalent: "r")
+      keyEquivalent: "")
     messageMenuItem.submenu = messageMenu
 
     let windowMenuItem = NSMenuItem()

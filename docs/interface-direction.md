@@ -26,13 +26,14 @@ Writer succeeds through restraint:
 | Restrained controls | Borderless SF Symbol archive and trash actions with tooltips and accessible names |
 | Keyboard-first workflow | Command menu equivalents and automatic selection of the next message |
 | Calm hierarchy | System typography, semantic colors, fixed row height, and no decorative animation |
+| Thread context | A native, newest-first message navigator appears beneath Summary only for multi-message conversations |
 
 ## Deliberate differences
 
 Flit should not visually clone Writer or inherit its implementation:
 
 - No GPL source or assets are copied into this MIT repository.
-- No Tauri, React, WebKit, backdrop blur, custom theme engine, or command palette.
+- No Tauri, React, backdrop blur, custom theme engine, or command palette. WebKit is isolated to sender-authored HTML email so messages retain their intended layout.
 - No tabs: message triage benefits from one stable reader context.
 - No persistent body statistics or footer chrome.
 - Use the system accent by default rather than adopting Writer's orange identity.
@@ -43,9 +44,12 @@ Flit should not visually clone Writer or inherit its implementation:
 The high-frequency loop is intentionally plain:
 
 1. Selection changes immediately.
-2. The next body is prepared in the background.
-3. Archive or Trash removes the row without animation.
-4. The next row becomes active in the same interaction.
-5. Remote confirmation happens after the local transition.
+2. Periodic metadata reconciliation preserves the active message and thread instead of resetting selection.
+3. Known thread headers appear immediately; missing Gmail thread headers hydrate in the background.
+4. Selecting a thread member reuses the single reader WebView and downloads only that message body.
+5. Opening a body saves a compact local snippet for its thread row.
+6. Archive or Trash removes the row without animation.
+7. The next row becomes active in the same interaction.
+8. Remote confirmation happens after the local transition.
 
 Every visual refinement must preserve the memory and responsiveness budgets in `README.md`.
