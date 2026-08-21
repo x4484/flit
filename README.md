@@ -74,6 +74,8 @@ SyncCoordinator
 
 The unified inbox is a keyset-paginated SQLite query. Archive and trash remove a row immediately, then persist a pending remote operation. Search covers inbox and archived headers through FTS5. Cached body files are deleted when a message leaves the inbox.
 
+See [the interface direction](docs/interface-direction.md) for the native design principles and reference notes guiding the UI.
+
 ## Roadmap
 
 - [x] Native AppKit unified-inbox shell
