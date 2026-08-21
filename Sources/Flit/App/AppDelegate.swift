@@ -72,6 +72,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       withTitle: "Find", action: #selector(MainWindowController.focusSearch), keyEquivalent: "f")
     editMenuItem.submenu = editMenu
 
+    let accountsMenuItem = NSMenuItem()
+    mainMenu.addItem(accountsMenuItem)
+    let accountsMenu = NSMenu(title: "Accounts")
+    accountsMenu.addItem(
+      withTitle: "Add Gmail Account…",
+      action: #selector(MainWindowController.addGmailAccount),
+      keyEquivalent: ""
+    )
+    accountsMenuItem.submenu = accountsMenu
+
     let messageMenuItem = NSMenuItem()
     mainMenu.addItem(messageMenuItem)
     let messageMenu = NSMenu(title: "Message")

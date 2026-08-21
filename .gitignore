@@ -6,3 +6,4 @@ dist/
 xcuserdata/
 DerivedData/
 .env
+Support/GoogleOAuth.local.json

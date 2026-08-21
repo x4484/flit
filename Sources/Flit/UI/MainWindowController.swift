@@ -114,8 +114,52 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     loadMessages(query: searchField.stringValue)
   }
 
+  @objc func addGmailAccount() {
+    guard let window else { return }
+
+    let emailField = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+    emailField.placeholderString = "name@gmail.com"
+    emailField.setAccessibilityLabel("Gmail address")
+
+    let alert = NSAlert()
+    alert.messageText = "Add Gmail account"
+    alert.informativeText =
+      "Enter the Gmail address you want to connect. Google sign-in will open in your browser."
+    alert.accessoryView = emailField
+    alert.addButton(withTitle: "Continue")
+    alert.addButton(withTitle: "Cancel")
+
+    alert.beginSheetModal(for: window) { [weak self] response in
+      guard response == .alertFirstButtonReturn else { return }
+      self?.connectGmail(email: emailField.stringValue)
+    }
+  }
+
   func reloadAfterSeed() {
     loadMessages(query: searchField.stringValue)
+  }
+
+  private func connectGmail(email: String) {
+    Task { [weak self, store] in
+      guard let self else { return }
+      do {
+        let configuration = try GoogleOAuthConfigurationLoader.load()
+        let oauth = GoogleOAuthService(configuration: configuration)
+        let session = try await oauth.authorize(email: email)
+        _ = try await store.addAccount(
+          name: "Gmail",
+          email: session.email,
+          provider: "gmail"
+        )
+        self.showMessage(
+          title: "Gmail connected",
+          message:
+            "Flit securely saved access for \(session.email). Inbox synchronization is the next milestone."
+        )
+      } catch {
+        self.showError(error)
+      }
+    }
   }
 
   private func makeInboxController() -> NSViewController {
@@ -390,6 +434,14 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
       ? "Body not cached. Provider sync is the next milestone." : message.preview
     archiveButton.isEnabled = true
     trashButton.isEnabled = true
+  }
+
+  private func showMessage(title: String, message: String) {
+    let alert = NSAlert()
+    alert.messageText = title
+    alert.informativeText = message
+    alert.addButton(withTitle: "Done")
+    alert.beginSheetModal(for: window ?? NSWindow())
   }
 
   private func showError(_ error: Error) {

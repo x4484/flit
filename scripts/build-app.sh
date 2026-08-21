@@ -12,6 +12,9 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/Flit" "$APP/Contents/MacOS/Flit"
 cp "$ROOT/Support/Info.plist" "$APP/Contents/Info.plist"
+if [[ -f "$ROOT/Support/GoogleOAuth.local.json" ]]; then
+  cp "$ROOT/Support/GoogleOAuth.local.json" "$APP/Contents/Resources/GoogleOAuth.json"
+fi
 
 codesign --force --sign - "$APP" >/dev/null
 printf 'Built %s\n' "$APP"

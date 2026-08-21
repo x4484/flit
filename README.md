@@ -37,7 +37,9 @@ Requirements:
 swift run Flit
 ```
 
-The initial build has no account setup yet, so it opens an empty inbox. To populate local demo data:
+The initial build opens an empty inbox. Use **Accounts → Add Gmail Account…** after completing the [local Google OAuth setup](docs/google-oauth-setup.md). Gmail synchronization is not implemented yet.
+
+To populate local demo data:
 
 ```bash
 FLIT_SEED_DEMO=1 swift run Flit
