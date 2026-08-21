@@ -11,7 +11,7 @@ enum GmailIMAPProviderError: Error, LocalizedError {
     case .featureUnavailable:
       return "This Gmail action is not available yet."
     case .messageNotFound:
-      return "The message is no longer in the Gmail inbox."
+      return "The message is no longer available in Gmail."
     case .missingBodyData:
       return "Gmail did not return a readable message body."
     case .mailboxChanged:
@@ -29,7 +29,7 @@ actor GmailIMAPProvider: MailProvider {
   private static let maximumMessagesPerSync = 200
   private static let fetchBatchSize = 25
   private static let metadataItems =
-    "UID X-GM-MSGID FLAGS INTERNALDATE BODY.PEEK[HEADER.FIELDS (MESSAGE-ID FROM TO CC SUBJECT DATE)]"
+    "UID X-GM-MSGID X-GM-THRID FLAGS INTERNALDATE BODY.PEEK[HEADER.FIELDS (MESSAGE-ID FROM TO CC SUBJECT DATE)]"
 
   private let accountID: Int64
   private let email: String
@@ -284,6 +284,38 @@ actor GmailIMAPProvider: MailProvider {
         messagesByRemoteID[message.remoteID] = message
       }
       return messagesByRemoteID.values.sorted { $0.receivedAt > $1.receivedAt }
+    } catch {
+      invalidateTransport(transport)
+      throw error
+    }
+  }
+
+  func fetchThread(remoteThreadID: String, limit: Int = 50) async throws -> [NewMessage] {
+    guard !remoteThreadID.isEmpty,
+      remoteThreadID.allSatisfy(\.isNumber),
+      limit > 0
+    else { return [] }
+
+    await acquireSession()
+    defer { releaseSession() }
+    try Task.checkCancellation()
+    let transport = try await authenticatedTransport()
+
+    do {
+      let selected = try await transport.execute("EXAMINE \"[Gmail]/All Mail\"")
+      let mailbox = try GmailIMAPParser.mailboxState(from: selected)
+      let search = try await transport.execute("UID SEARCH X-GM-THRID \(remoteThreadID)")
+      let uids = Array(
+        GmailIMAPParser.searchedUIDs(from: search, greaterThan: 0)
+          .suffix(min(limit, Self.maximumMessagesPerSync))
+      )
+      return try await fetchMetadata(
+        sequenceNumbers: uids,
+        useUIDCommand: true,
+        uidValidity: mailbox.uidValidity,
+        mailboxState: .archive,
+        transport: transport
+      )
     } catch {
       invalidateTransport(transport)
       throw error

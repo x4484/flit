@@ -10,8 +10,13 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
   private let openRouterKeyStore = OpenRouterAPIKeyStore()
   private let summaryService = OpenRouterSummaryService()
   private var messages: [MessageSummary] = []
+  private var threadMessages: [MessageSummary] = []
+  private var activeMessageID: Int64?
+  private var selectedThreadRemoteID: String?
+  private var isUpdatingThreadSelection = false
   private var searchTask: Task<Void, Never>?
   private var remoteSearchTask: Task<Void, Never>?
+  private var threadLoadTask: Task<Void, Never>?
   private var bodyLoadTask: Task<Void, Never>?
   private var summaryTask: Task<Void, Never>?
   private var composeWindowController: ComposeWindowController?
@@ -28,6 +33,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
   private var hasMoreInboxMessages = true
 
   private let tableView = NSTableView()
+  private let threadTableView = NSTableView()
+  private var threadSplitItem: NSSplitViewItem?
+  private let threadHeadingLabel = NSTextField(labelWithString: "Thread")
   private let searchField = NSSearchField()
   private let inboxCountLabel = NSTextField(labelWithString: "0")
   private let refreshButton = NSButton(title: "Refresh", target: nil, action: nil)
@@ -122,11 +130,27 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
   }
 
   func numberOfRows(in tableView: NSTableView) -> Int {
-    messages.count
+    tableView === threadTableView ? threadMessages.count : messages.count
   }
 
   func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView?
   {
+    if tableView === threadTableView {
+      guard threadMessages.indices.contains(row) else { return nil }
+      let cell =
+        (tableView.makeView(withIdentifier: ThreadMessageCellView.identifier, owner: self)
+          as? ThreadMessageCellView)
+        ?? ThreadMessageCellView()
+      let message = threadMessages[row]
+      cell.configure(
+        with: message,
+        dateText: rowDateFormatter.string(from: message.receivedDate),
+        position: row + 1,
+        count: threadMessages.count
+      )
+      return cell
+    }
+
     guard messages.indices.contains(row) else { return nil }
     let cell =
       (tableView.makeView(withIdentifier: MessageCellView.identifier, owner: self)
@@ -145,7 +169,32 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
   }
 
   func tableViewSelectionDidChange(_ notification: Notification) {
+    guard let changedTable = notification.object as? NSTableView else { return }
+    if changedTable === threadTableView {
+      guard !isUpdatingThreadSelection,
+        threadMessages.indices.contains(threadTableView.selectedRow)
+      else { return }
+      activeMessageID = threadMessages[threadTableView.selectedRow].id
+      renderSelection()
+      markSelectedReadIfNeeded()
+      return
+    }
+
+    guard changedTable === tableView, messages.indices.contains(tableView.selectedRow) else {
+      activeMessageID = nil
+      selectedThreadRemoteID = nil
+      threadMessages = []
+      updateThreadNavigator()
+      renderSelection()
+      return
+    }
+    let message = messages[tableView.selectedRow]
+    activeMessageID = message.id
+    selectedThreadRemoteID = message.threadRemoteID.isEmpty ? nil : message.threadRemoteID
+    threadMessages = [message]
+    updateThreadNavigator()
     renderSelection()
+    loadThread(for: message)
     if suppressNextReadMark {
       suppressNextReadMark = false
     } else {
@@ -199,10 +248,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     guard let action = menuItem.action, messageActions.contains(action) else { return true }
     guard window?.isKeyWindow == true, window?.attachedSheet == nil else { return false }
 
-    let selectedRow = tableView.selectedRow
-    guard messages.indices.contains(selectedRow) else { return false }
+    guard let message = selectedMessage else { return false }
     if action == #selector(archiveSelected) || action == #selector(trashSelected) {
-      guard messages[selectedRow].mailboxState == .inbox else { return false }
+      guard message.mailboxState == .inbox else { return false }
     }
     if action == #selector(trashSelected),
       let textView = window?.firstResponder as? NSTextView,
@@ -213,7 +261,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     if action == #selector(replySelected) || action == #selector(replyAllSelected)
       || action == #selector(forwardSelected)
     {
-      return messages[selectedRow].accountProvider == "gmail"
+      return message.accountProvider == "gmail"
     }
     return true
   }
@@ -570,9 +618,14 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
   }
 
   private func makeSummaryController() -> NSViewController {
-    let viewController = NSViewController()
-    let container = SidebarSurfaceView()
-    viewController.view = container
+    let splitController = NSSplitViewController()
+    splitController.splitView.isVertical = false
+    splitController.splitView.dividerStyle = .thin
+    splitController.splitView.autosaveName = "FlitSummaryThreadSplit"
+
+    let summaryController = NSViewController()
+    let summaryContainer = SidebarSurfaceView()
+    summaryController.view = summaryContainer
 
     let heading = NSTextField(labelWithString: "Summary")
     heading.font = .systemFont(ofSize: 16, weight: .semibold)
@@ -586,20 +639,72 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     summaryLabel.setAccessibilityLabel("Email summary")
     summaryLabel.translatesAutoresizingMaskIntoConstraints = false
 
-    container.addSubview(heading)
-    container.addSubview(summaryLabel)
+    summaryContainer.addSubview(heading)
+    summaryContainer.addSubview(summaryLabel)
     NSLayoutConstraint.activate([
-      heading.topAnchor.constraint(equalTo: container.safeAreaLayoutGuide.topAnchor, constant: 24),
-      heading.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
-      heading.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -20),
-
+      heading.topAnchor.constraint(
+        equalTo: summaryContainer.safeAreaLayoutGuide.topAnchor, constant: 24),
+      heading.leadingAnchor.constraint(equalTo: summaryContainer.leadingAnchor, constant: 20),
+      heading.trailingAnchor.constraint(
+        lessThanOrEqualTo: summaryContainer.trailingAnchor, constant: -20),
       summaryLabel.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 18),
-      summaryLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
-      summaryLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
-      summaryLabel.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor, constant: -20),
+      summaryLabel.leadingAnchor.constraint(equalTo: summaryContainer.leadingAnchor, constant: 20),
+      summaryLabel.trailingAnchor.constraint(equalTo: summaryContainer.trailingAnchor, constant: -20),
+      summaryLabel.bottomAnchor.constraint(
+        lessThanOrEqualTo: summaryContainer.bottomAnchor, constant: -20),
     ])
+
+    let threadController = NSViewController()
+    let threadContainer = SidebarSurfaceView()
+    threadController.view = threadContainer
+    threadHeadingLabel.font = .systemFont(ofSize: 14, weight: .semibold)
+    threadHeadingLabel.translatesAutoresizingMaskIntoConstraints = false
+
+    threadTableView.headerView = nil
+    threadTableView.backgroundColor = .clear
+    threadTableView.rowHeight = 58
+    threadTableView.intercellSpacing = NSSize(width: 0, height: 2)
+    threadTableView.selectionHighlightStyle = .regular
+    threadTableView.usesAlternatingRowBackgroundColors = false
+    threadTableView.delegate = self
+    threadTableView.dataSource = self
+    threadTableView.setAccessibilityLabel("Messages in thread")
+    let threadColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("ThreadMessage"))
+    threadColumn.resizingMask = .autoresizingMask
+    threadTableView.addTableColumn(threadColumn)
+
+    let threadScrollView = NSScrollView()
+    threadScrollView.documentView = threadTableView
+    threadScrollView.hasVerticalScroller = true
+    threadScrollView.autohidesScrollers = true
+    threadScrollView.drawsBackground = false
+    threadScrollView.translatesAutoresizingMaskIntoConstraints = false
+
+    threadContainer.addSubview(threadHeadingLabel)
+    threadContainer.addSubview(threadScrollView)
+    NSLayoutConstraint.activate([
+      threadHeadingLabel.topAnchor.constraint(equalTo: threadContainer.topAnchor, constant: 16),
+      threadHeadingLabel.leadingAnchor.constraint(equalTo: threadContainer.leadingAnchor, constant: 20),
+      threadHeadingLabel.trailingAnchor.constraint(
+        lessThanOrEqualTo: threadContainer.trailingAnchor, constant: -20),
+      threadScrollView.topAnchor.constraint(equalTo: threadHeadingLabel.bottomAnchor, constant: 10),
+      threadScrollView.leadingAnchor.constraint(equalTo: threadContainer.leadingAnchor),
+      threadScrollView.trailingAnchor.constraint(equalTo: threadContainer.trailingAnchor),
+      threadScrollView.bottomAnchor.constraint(equalTo: threadContainer.bottomAnchor),
+    ])
+
+    let summaryItem = NSSplitViewItem(viewController: summaryController)
+    summaryItem.minimumThickness = 140
+    summaryItem.preferredThicknessFraction = 0.38
+    splitController.addSplitViewItem(summaryItem)
+    let threadItem = NSSplitViewItem(viewController: threadController)
+    threadItem.minimumThickness = 180
+    threadItem.isCollapsed = true
+    splitController.addSplitViewItem(threadItem)
+    threadSplitItem = threadItem
+
     setSummaryText("Open an email to see its summary.")
-    return viewController
+    return splitController
   }
 
   private func configureActionButton(
@@ -651,9 +756,20 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
           self.suppressNextReadMark = selectionWillChange
           self.tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
           if !selectionWillChange {
+            let message = loaded[0]
+            self.activeMessageID = message.id
+            self.selectedThreadRemoteID = message.threadRemoteID.isEmpty
+              ? nil : message.threadRemoteID
+            self.threadMessages = [message]
+            self.updateThreadNavigator()
             self.renderSelection()
+            self.loadThread(for: message)
           }
         } else {
+          self.activeMessageID = nil
+          self.selectedThreadRemoteID = nil
+          self.threadMessages = []
+          self.updateThreadNavigator()
           self.renderSelection()
         }
 
@@ -747,6 +863,66 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
   }
 
+  private func loadThread(for message: MessageSummary) {
+    threadLoadTask?.cancel()
+    guard !message.threadRemoteID.isEmpty else { return }
+    let expectedThreadID = message.threadRemoteID
+
+    threadLoadTask = Task { [weak self, store, gmailSyncService] in
+      do {
+        let localMessages = try await store.threadMessages(
+          accountID: message.accountID,
+          remoteThreadID: expectedThreadID,
+          limit: 50
+        )
+        guard !Task.isCancelled, let self, self.selectedThreadRemoteID == expectedThreadID else {
+          return
+        }
+        if !localMessages.isEmpty {
+          self.threadMessages = localMessages
+          self.updateThreadNavigator()
+        }
+        guard message.accountProvider == "gmail" else { return }
+
+        let hydratedMessages = try await gmailSyncService.hydrateThread(for: message, limit: 50)
+        guard !Task.isCancelled, self.selectedThreadRemoteID == expectedThreadID else { return }
+        self.threadMessages = hydratedMessages
+        self.updateThreadNavigator()
+        if let activeMessageID = self.activeMessageID,
+          self.cachedBodyURLs[activeMessageID] == nil,
+          self.threadMessages.first(where: { $0.id == activeMessageID })?.mailboxState == .archive
+        {
+          self.renderSelection()
+        }
+      } catch is CancellationError {
+        return
+      } catch {
+        // Locally known thread members remain selectable while Gmail is offline.
+      }
+    }
+  }
+
+  private func updateThreadNavigator() {
+    let showsThread = threadMessages.count > 1
+    threadHeadingLabel.stringValue = "Thread · \(threadMessages.count)"
+    threadHeadingLabel.setAccessibilityLabel(
+      "Thread with \(threadMessages.count) \(threadMessages.count == 1 ? "message" : "messages")"
+    )
+    threadSplitItem?.isCollapsed = !showsThread
+
+    isUpdatingThreadSelection = true
+    threadTableView.reloadData()
+    if let activeMessageID,
+      let row = threadMessages.firstIndex(where: { $0.id == activeMessageID })
+    {
+      threadTableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+      threadTableView.scrollRowToVisible(row)
+    } else {
+      threadTableView.deselectAll(nil)
+    }
+    isUpdatingThreadSelection = false
+  }
+
   private func updateInboxCount(_ count: Int) {
     inboxCount = count
     inboxCountLabel.stringValue = count.formatted()
@@ -755,21 +931,19 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
   }
 
   private func performMove(_ destination: MailboxState) {
-    let selectedRow = tableView.selectedRow
-    guard messages.indices.contains(selectedRow) else { return }
+    guard let message = selectedMessage, message.mailboxState == .inbox else { return }
 
-    let message = messages.remove(at: selectedRow)
-    let removedFromInbox = message.mailboxState == .inbox
-    if removedFromInbox {
-      updateInboxCount(max(0, inboxCount - 1))
-    }
-    tableView.removeRows(at: IndexSet(integer: selectedRow), withAnimation: [])
-
-    if !messages.isEmpty {
-      let nextRow = min(selectedRow, messages.count - 1)
-      tableView.selectRowIndexes(IndexSet(integer: nextRow), byExtendingSelection: false)
-    } else {
-      renderSelection()
+    let sidebarRow = messages.firstIndex(where: { $0.id == message.id })
+    updateInboxCount(max(0, inboxCount - 1))
+    archiveButton.isEnabled = false
+    trashButton.isEnabled = false
+    if let sidebarRow {
+      messages.remove(at: sidebarRow)
+      tableView.removeRows(at: IndexSet(integer: sidebarRow), withAnimation: [])
+      if tableView.selectedRow == -1, !messages.isEmpty {
+        let nextRow = min(sidebarRow, messages.count - 1)
+        tableView.selectRowIndexes(IndexSet(integer: nextRow), byExtendingSelection: false)
+      }
     }
 
     Task { [weak self, store] in
@@ -785,12 +959,30 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
           try? FileManager.default.removeItem(at: transientURL)
         }
         _ = try? await self.gmailSyncService.flushPendingOperations()
+        if self.selectedThreadRemoteID == message.threadRemoteID,
+          !message.threadRemoteID.isEmpty
+        {
+          if let hydratedMessages = try? await self.gmailSyncService.hydrateThread(
+            for: message,
+            limit: 50
+          ) {
+            self.threadMessages = hydratedMessages
+          } else {
+            self.threadMessages = try await store.threadMessages(
+              accountID: message.accountID,
+              remoteThreadID: message.threadRemoteID,
+              limit: 50
+            )
+          }
+          self.updateThreadNavigator()
+          self.renderSelection()
+        }
       } catch {
         guard let self else { return }
-        self.messages.insert(message, at: min(selectedRow, self.messages.count))
-        if removedFromInbox {
-          self.updateInboxCount(self.inboxCount + 1)
+        if let sidebarRow {
+          self.messages.insert(message, at: min(sidebarRow, self.messages.count))
         }
+        self.updateInboxCount(self.inboxCount + 1)
         self.tableView.reloadData()
         self.showError(error)
       }
@@ -798,17 +990,25 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
   }
 
   private func markSelectedReadIfNeeded() {
-    let selectedRow = tableView.selectedRow
-    guard messages.indices.contains(selectedRow),
-      messages[selectedRow].mailboxState == .inbox,
-      !messages[selectedRow].isRead
+    guard let message = selectedMessage,
+      message.mailboxState == .inbox,
+      !message.isRead
     else { return }
-    let messageID = messages[selectedRow].id
-    messages[selectedRow].isRead = true
-    tableView.reloadData(
-      forRowIndexes: IndexSet(integer: selectedRow),
-      columnIndexes: IndexSet(integersIn: 0..<tableView.numberOfColumns)
-    )
+    let messageID = message.id
+    if let sidebarRow = messages.firstIndex(where: { $0.id == messageID }) {
+      messages[sidebarRow].isRead = true
+      tableView.reloadData(
+        forRowIndexes: IndexSet(integer: sidebarRow),
+        columnIndexes: IndexSet(integersIn: 0..<tableView.numberOfColumns)
+      )
+    }
+    if let threadRow = threadMessages.firstIndex(where: { $0.id == messageID }) {
+      threadMessages[threadRow].isRead = true
+      threadTableView.reloadData(
+        forRowIndexes: IndexSet(integer: threadRow),
+        columnIndexes: IndexSet(integersIn: 0..<threadTableView.numberOfColumns)
+      )
+    }
     Task { [store, gmailSyncService] in
       try? await store.markRead(messageID: messageID)
       _ = try? await gmailSyncService.flushPendingOperations()
@@ -818,10 +1018,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
   private func renderSelection() {
     bodyLoadTask?.cancel()
     summaryTask?.cancel()
-    let selectedRow = tableView.selectedRow
-    let selectedID = messages.indices.contains(selectedRow) ? messages[selectedRow].id : nil
+    let selectedID = activeMessageID
     cleanupTransientBodyCache(keeping: selectedID)
-    guard messages.indices.contains(selectedRow) else {
+    guard let message = selectedMessage else {
       fromLabel.stringValue = ""
       toLabel.stringValue = ""
       ccLabel.stringValue = ""
@@ -841,7 +1040,6 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
       return
     }
 
-    let message = messages[selectedRow]
     setAddressLine(fromLabel, title: "From", value: message.sender)
     setAddressLine(toLabel, title: "To", value: message.recipients)
     setAddressLine(ccLabel, title: "Cc", value: message.cc)
@@ -871,11 +1069,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
   }
 
   private func presentComposer(_ mode: ComposeMode) {
-    let selectedRow = tableView.selectedRow
-    guard messages.indices.contains(selectedRow), let window, window.attachedSheet == nil else {
+    guard let message = selectedMessage, let window, window.attachedSheet == nil else {
       return
     }
-    let message = messages[selectedRow]
     guard message.accountProvider == "gmail" else { return }
 
     let displayedBody = displayedBodyText
@@ -1004,7 +1200,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
           readableBody = MIMETextExtractor.readableText(text)
           self.setBodyText(text.isEmpty ? "This message has no readable text." : text)
         }
-        if let message = self.messages.first(where: { $0.id == messageID }),
+        if let message = self.threadMessages.first(where: { $0.id == messageID })
+          ?? self.messages.first(where: { $0.id == messageID }),
           message.mailboxState == .inbox,
           !readableBody.isEmpty
         {
@@ -1102,9 +1299,14 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
   }
 
+  private var selectedMessage: MessageSummary? {
+    guard let activeMessageID else { return nil }
+    return threadMessages.first(where: { $0.id == activeMessageID })
+      ?? messages.first(where: { $0.id == activeMessageID })
+  }
+
   private var selectedMessageID: Int64? {
-    let row = tableView.selectedRow
-    return messages.indices.contains(row) ? messages[row].id : nil
+    activeMessageID
   }
 
   private func setBodyText(_ text: String) {

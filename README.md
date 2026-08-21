@@ -2,14 +2,14 @@
 
 Flit is an experimental, extremely lightweight native macOS mail client focused on one job: triaging mail quickly across accounts.
 
-> **Status:** pre-alpha. The local-first AppKit interface, SQLite store, local header search, Gmail OAuth, bounded Gmail inbox sync, body-on-open loading, full-fidelity HTML rendering, cached OpenRouter summaries, optimistic remote actions, and Gmail reply/forward sending are working. iCloud remains under development.
+> **Status:** pre-alpha. The local-first AppKit interface, SQLite store, local header search, Gmail OAuth, bounded Gmail inbox sync, lazy Gmail thread navigation, body-on-open loading, full-fidelity HTML rendering, cached OpenRouter summaries, optimistic remote actions, and Gmail reply/forward sending are working. iCloud remains under development.
 
 ## Principles
 
 - Native AppKit shell, with an isolated WebKit view only for sender-authored HTML email
 - Show the local inbox before touching the network
 - Keep memory proportional to the visible viewport
-- Download message bodies only when opened
+- Hydrate thread headers only when selected and download only the active message body
 - Delete persistent cached bodies after archive; treat searched archived bodies as selection-scoped temporary files
 - Apply archive, trash, and read actions optimistically
 - Keep the main thread free of SQL, MIME, file, and network work
@@ -72,6 +72,7 @@ MailStore actor ── SQLite WAL + FTS5
 GmailSyncService
    ├── TLS IMAP + XOAUTH2 metadata sync
    ├── bounded initial and incremental UID batches
+   ├── bounded Gmail X-GM-THRID discovery from All Mail
    ├── 1 MiB body-on-open fetch + eight-file inbox cache + transient archive reads
    ├── queued read, archive, and trash replication
    └── TLS SMTP + XOAUTH2 reply, reply-all, and forward
@@ -83,7 +84,7 @@ SyncCoordinator
    └── cross-account connection budget
 ```
 
-The unified inbox is a keyset-paginated SQLite query. Archive and trash remove a row immediately, then persist a pending remote operation. Search covers inbox and archived headers through FTS5. Cached body files are deleted when a message leaves the inbox.
+The unified inbox is a keyset-paginated SQLite query. Selecting a Gmail conversation lazily discovers up to 50 thread headers from All Mail and presents them as selectable native rows beneath Summary; only the active body is downloaded into the single reader WebView. Archive and trash remove a row immediately, then persist a pending remote operation. Search covers inbox and archived headers through FTS5. Cached body files are deleted when a message leaves the inbox.
 
 See [the interface direction](docs/interface-direction.md) for the native design principles and reference notes guiding the UI.
 
@@ -98,6 +99,7 @@ See [the interface direction](docs/interface-direction.md) for the native design
 - [x] Replicate queued Gmail archive, trash, and read operations
 - [x] Reconcile remote Gmail moves, deletions, and read-state changes
 - [x] Load older Gmail inbox pages and search unsynchronized inbox and archived headers
+- [x] Lazy Gmail thread discovery and right-pane message navigation
 - [x] Plain-text MIME body selection and bounded cache
 - [x] Gmail SMTP reply, reply-all, and forward
 - [x] Cached one-sentence OpenRouter summaries

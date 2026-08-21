@@ -176,6 +176,15 @@ actor MailStore {
     try statement.step()
   }
 
+  func remoteUID(messageID: Int64, mailboxState: MailboxState) throws -> Int64? {
+    let statement = try database.prepare(
+      "SELECT remote_uid FROM message_locations WHERE message_id = ? AND mailbox_state = ?")
+    try statement.bind(messageID, at: 1)
+    try statement.bind(mailboxState.rawValue, at: 2)
+    guard try statement.step() else { return nil }
+    return statement.integer(at: 0)
+  }
+
   func cacheBody(at path: String, messageID: Int64) throws -> Bool {
     let current = try database.prepare("SELECT mailbox_state FROM messages WHERE id = ?")
     try current.bind(messageID, at: 1)
@@ -315,6 +324,14 @@ actor MailStore {
             END
         WHERE account_id = ? AND remote_id = ? AND mailbox_state = ?
         """)
+      let updateLocation = try database.prepare(
+        """
+        INSERT INTO message_locations (message_id, mailbox_state, remote_uid, uid_validity)
+        SELECT id, ?, ?, ? FROM messages WHERE account_id = ? AND remote_id = ?
+        ON CONFLICT(message_id, mailbox_state) DO UPDATE SET
+          remote_uid = excluded.remote_uid,
+          uid_validity = excluded.uid_validity
+        """)
       for message in result.messages {
         try updateState.bind(message.remoteUID, at: 1)
         try updateState.bind(message.uidValidity, at: 2)
@@ -324,6 +341,14 @@ actor MailStore {
         try updateState.bind(MailboxState.inbox.rawValue, at: 6)
         try updateState.step()
         try updateState.reset()
+
+        try updateLocation.bind(MailboxState.inbox.rawValue, at: 1)
+        try updateLocation.bind(message.remoteUID, at: 2)
+        try updateLocation.bind(message.uidValidity, at: 3)
+        try updateLocation.bind(accountID, at: 4)
+        try updateLocation.bind(message.remoteID, at: 5)
+        try updateLocation.step()
+        try updateLocation.reset()
       }
 
       let current = try database.prepare(
@@ -427,6 +452,30 @@ actor MailStore {
     return try readSummaries(from: statement)
   }
 
+  func threadMessages(
+    accountID: Int64,
+    remoteThreadID: String,
+    limit: Int = 50
+  ) throws -> [MessageSummary] {
+    guard !remoteThreadID.isEmpty else { return [] }
+    let statement = try database.prepare(
+      """
+      SELECT \(Self.summaryColumns)
+      FROM messages m
+      JOIN accounts a ON a.id = m.account_id
+      WHERE m.account_id = ? AND m.thread_remote_id = ?
+        AND m.mailbox_state IN (?, ?)
+      ORDER BY m.received_at DESC, m.id DESC
+      LIMIT ?
+      """)
+    try statement.bind(accountID, at: 1)
+    try statement.bind(remoteThreadID, at: 2)
+    try statement.bind(MailboxState.inbox.rawValue, at: 3)
+    try statement.bind(MailboxState.archive.rawValue, at: 4)
+    try statement.bind(Int64(limit), at: 5)
+    return try readSummaries(from: statement)
+  }
+
   func search(_ query: String, limit: Int = 200) throws -> [MessageSummary] {
     let matchQuery = Self.ftsQuery(from: query)
     guard !matchQuery.isEmpty else { return try fetchInbox(limit: limit) }
@@ -515,11 +564,15 @@ actor MailStore {
     let statement = try database.prepare(
       """
       INSERT INTO messages (
-          account_id, remote_id, remote_uid, uid_validity, received_at,
+          account_id, remote_id, thread_remote_id, remote_uid, uid_validity, received_at,
           sender, recipients, cc, internet_message_id, subject, preview, flags,
           mailbox_state, body_path
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(account_id, remote_id) DO UPDATE SET
+          thread_remote_id = CASE
+            WHEN excluded.thread_remote_id = '' THEN messages.thread_remote_id
+            ELSE excluded.thread_remote_id
+          END,
           remote_uid = CASE
             WHEN messages.mailbox_state = 0 AND excluded.mailbox_state = 1
               THEN messages.remote_uid
@@ -559,23 +612,40 @@ actor MailStore {
 
     try statement.bind(message.accountID, at: 1)
     try statement.bind(message.remoteID, at: 2)
-    try statement.bind(message.remoteUID, at: 3)
-    try statement.bind(message.uidValidity, at: 4)
-    try statement.bind(message.receivedAt, at: 5)
-    try statement.bind(message.sender, at: 6)
-    try statement.bind(message.recipients, at: 7)
-    try statement.bind(message.cc, at: 8)
-    try statement.bind(message.internetMessageID, at: 9)
-    try statement.bind(message.subject, at: 10)
-    try statement.bind(message.preview, at: 11)
-    try statement.bind(message.isRead ? Int32(1) : Int32(0), at: 12)
-    try statement.bind(message.mailboxState.rawValue, at: 13)
-    try statement.bind(message.bodyPath, at: 14)
+    try statement.bind(message.threadRemoteID, at: 3)
+    try statement.bind(message.remoteUID, at: 4)
+    try statement.bind(message.uidValidity, at: 5)
+    try statement.bind(message.receivedAt, at: 6)
+    try statement.bind(message.sender, at: 7)
+    try statement.bind(message.recipients, at: 8)
+    try statement.bind(message.cc, at: 9)
+    try statement.bind(message.internetMessageID, at: 10)
+    try statement.bind(message.subject, at: 11)
+    try statement.bind(message.preview, at: 12)
+    try statement.bind(message.isRead ? Int32(1) : Int32(0), at: 13)
+    try statement.bind(message.mailboxState.rawValue, at: 14)
+    try statement.bind(message.bodyPath, at: 15)
 
     guard try statement.step() else {
       throw DatabaseError.step("Message insert returned no identifier")
     }
-    return statement.integer(at: 0)
+    let messageID = statement.integer(at: 0)
+    if let remoteUID = message.remoteUID {
+      let location = try database.prepare(
+        """
+        INSERT INTO message_locations (message_id, mailbox_state, remote_uid, uid_validity)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(message_id, mailbox_state) DO UPDATE SET
+          remote_uid = excluded.remote_uid,
+          uid_validity = excluded.uid_validity
+        """)
+      try location.bind(messageID, at: 1)
+      try location.bind(message.mailboxState.rawValue, at: 2)
+      try location.bind(remoteUID, at: 3)
+      try location.bind(message.uidValidity, at: 4)
+      try location.step()
+    }
+    return messageID
   }
 
   private func moveLocally(
@@ -632,7 +702,7 @@ actor MailStore {
     messages.reserveCapacity(100)
 
     while try statement.step() {
-      guard let state = MailboxState(rawValue: Int32(statement.integer(at: 16))) else { continue }
+      guard let state = MailboxState(rawValue: Int32(statement.integer(at: 17))) else { continue }
       messages.append(
         MessageSummary(
           id: statement.integer(at: 0),
@@ -641,25 +711,26 @@ actor MailStore {
           accountEmail: statement.text(at: 3),
           accountProvider: statement.text(at: 4),
           remoteID: statement.text(at: 5),
-          remoteUID: statement.optionalInteger(at: 6),
-          receivedAt: statement.integer(at: 7),
-          sender: statement.text(at: 8),
-          recipients: statement.text(at: 9),
-          cc: statement.text(at: 10),
-          internetMessageID: statement.text(at: 11),
-          subject: statement.text(at: 12),
-          preview: statement.text(at: 13),
-          isRead: statement.integer(at: 14) & 1 == 1,
+          threadRemoteID: statement.text(at: 6),
+          remoteUID: statement.optionalInteger(at: 7),
+          receivedAt: statement.integer(at: 8),
+          sender: statement.text(at: 9),
+          recipients: statement.text(at: 10),
+          cc: statement.text(at: 11),
+          internetMessageID: statement.text(at: 12),
+          subject: statement.text(at: 13),
+          preview: statement.text(at: 14),
+          isRead: statement.integer(at: 15) & 1 == 1,
           mailboxState: state,
-          bodyPath: statement.optionalText(at: 15)
+          bodyPath: statement.optionalText(at: 16)
         ))
     }
     return messages
   }
 
   private static let summaryColumns = """
-    m.id, m.account_id, a.name, a.email, a.provider, m.remote_id, m.remote_uid,
-    m.received_at, m.sender, m.recipients, m.cc, m.internet_message_id,
+    m.id, m.account_id, a.name, a.email, a.provider, m.remote_id, m.thread_remote_id,
+    m.remote_uid, m.received_at, m.sender, m.recipients, m.cc, m.internet_message_id,
     m.subject, m.preview, m.flags, m.body_path, m.mailbox_state
     """
 
@@ -719,6 +790,7 @@ actor MailStore {
           id INTEGER PRIMARY KEY,
           account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
           remote_id TEXT NOT NULL,
+          thread_remote_id TEXT NOT NULL DEFAULT '',
           remote_uid INTEGER,
           uid_validity INTEGER,
           received_at INTEGER NOT NULL,
@@ -740,6 +812,14 @@ actor MailStore {
 
       CREATE INDEX IF NOT EXISTS account_sync
       ON messages(account_id, uid_validity, remote_uid);
+
+      CREATE TABLE IF NOT EXISTS message_locations (
+          message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+          mailbox_state INTEGER NOT NULL,
+          remote_uid INTEGER NOT NULL,
+          uid_validity INTEGER,
+          PRIMARY KEY(message_id, mailbox_state)
+      );
 
       CREATE TABLE IF NOT EXISTS pending_operations (
           id INTEGER PRIMARY KEY,
@@ -797,6 +877,13 @@ actor MailStore {
     if !columnNames.contains("summary") {
       try database.execute("ALTER TABLE messages ADD COLUMN summary TEXT")
     }
+    if !columnNames.contains("thread_remote_id") {
+      try database.execute(
+        "ALTER TABLE messages ADD COLUMN thread_remote_id TEXT NOT NULL DEFAULT ''")
+      shouldRefreshGmailMetadata = true
+    }
+    try database.execute(
+      "CREATE INDEX IF NOT EXISTS account_thread ON messages(account_id, thread_remote_id, received_at DESC)")
     if shouldRefreshGmailMetadata {
       try database.execute(
         """

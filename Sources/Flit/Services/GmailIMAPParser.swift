@@ -65,6 +65,10 @@ enum GmailIMAPParser {
     firstCapture(#"\bX-GM-MSGID\s+(\d+)\b"#, in: response.line)
   }
 
+  static func gmailThreadID(from response: IMAPResponse) -> String? {
+    firstCapture(#"\bX-GM-THRID\s+(\d+)\b"#, in: response.line)
+  }
+
   static func remoteMessageState(
     from response: IMAPResponse,
     uidValidity: Int64
@@ -111,6 +115,7 @@ enum GmailIMAPParser {
     return NewMessage(
       accountID: accountID,
       remoteID: remoteID,
+      threadRemoteID: gmailThreadID(from: response) ?? remoteID,
       remoteUID: uid,
       uidValidity: uidValidity,
       receivedAt: receivedTimestamp(internalDate),

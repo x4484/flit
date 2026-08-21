@@ -33,6 +33,7 @@ struct MessageSummary: Sendable, Equatable, Identifiable {
   let accountEmail: String
   let accountProvider: String
   let remoteID: String
+  let threadRemoteID: String
   let remoteUID: Int64?
   let receivedAt: Int64
   let sender: String
@@ -44,6 +45,46 @@ struct MessageSummary: Sendable, Equatable, Identifiable {
   var isRead: Bool
   let mailboxState: MailboxState
   let bodyPath: String?
+
+  init(
+    id: Int64,
+    accountID: Int64,
+    accountName: String,
+    accountEmail: String,
+    accountProvider: String,
+    remoteID: String,
+    threadRemoteID: String = "",
+    remoteUID: Int64?,
+    receivedAt: Int64,
+    sender: String,
+    recipients: String,
+    cc: String,
+    internetMessageID: String,
+    subject: String,
+    preview: String,
+    isRead: Bool,
+    mailboxState: MailboxState,
+    bodyPath: String?
+  ) {
+    self.id = id
+    self.accountID = accountID
+    self.accountName = accountName
+    self.accountEmail = accountEmail
+    self.accountProvider = accountProvider
+    self.remoteID = remoteID
+    self.threadRemoteID = threadRemoteID
+    self.remoteUID = remoteUID
+    self.receivedAt = receivedAt
+    self.sender = sender
+    self.recipients = recipients
+    self.cc = cc
+    self.internetMessageID = internetMessageID
+    self.subject = subject
+    self.preview = preview
+    self.isRead = isRead
+    self.mailboxState = mailboxState
+    self.bodyPath = bodyPath
+  }
 
   var cursor: PageCursor {
     PageCursor(receivedAt: receivedAt, id: id)
@@ -69,6 +110,7 @@ struct PendingMailOperation: Sendable, Equatable, Identifiable {
 struct NewMessage: Sendable, Equatable {
   let accountID: Int64
   let remoteID: String
+  let threadRemoteID: String
   let remoteUID: Int64?
   let uidValidity: Int64?
   let receivedAt: Int64
@@ -81,4 +123,38 @@ struct NewMessage: Sendable, Equatable {
   let isRead: Bool
   let mailboxState: MailboxState
   let bodyPath: String?
+
+  init(
+    accountID: Int64,
+    remoteID: String,
+    threadRemoteID: String = "",
+    remoteUID: Int64?,
+    uidValidity: Int64?,
+    receivedAt: Int64,
+    sender: String,
+    recipients: String,
+    cc: String,
+    internetMessageID: String,
+    subject: String,
+    preview: String,
+    isRead: Bool,
+    mailboxState: MailboxState,
+    bodyPath: String?
+  ) {
+    self.accountID = accountID
+    self.remoteID = remoteID
+    self.threadRemoteID = threadRemoteID
+    self.remoteUID = remoteUID
+    self.uidValidity = uidValidity
+    self.receivedAt = receivedAt
+    self.sender = sender
+    self.recipients = recipients
+    self.cc = cc
+    self.internetMessageID = internetMessageID
+    self.subject = subject
+    self.preview = preview
+    self.isRead = isRead
+    self.mailboxState = mailboxState
+    self.bodyPath = bodyPath
+  }
 }

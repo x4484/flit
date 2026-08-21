@@ -34,7 +34,7 @@ struct GmailIMAPParserTests {
       """.utf8)
     let response = IMAPResponse(
       line:
-        "* 42 FETCH (X-GM-MSGID 1888123412341234 UID 99 FLAGS (\\Seen) INTERNALDATE \"20-Aug-2026 10:15:00 +0000\" BODY[HEADER.FIELDS (MESSAGE-ID FROM TO CC SUBJECT DATE)] {\(headers.count)} )",
+        "* 42 FETCH (X-GM-MSGID 1888123412341234 X-GM-THRID 1777000111222333 UID 99 FLAGS (\\Seen) INTERNALDATE \"20-Aug-2026 10:15:00 +0000\" BODY[HEADER.FIELDS (MESSAGE-ID FROM TO CC SUBJECT DATE)] {\(headers.count)} )",
       literal: headers
     )
 
@@ -43,6 +43,7 @@ struct GmailIMAPParserTests {
 
     #expect(message.accountID == 7)
     #expect(message.remoteID == "1888123412341234")
+    #expect(message.threadRemoteID == "1777000111222333")
     #expect(message.remoteUID == 99)
     #expect(message.uidValidity == 123)
     #expect(message.sender == "Maya Chen <maya@example.com>")

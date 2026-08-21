@@ -42,6 +42,52 @@ struct MailStoreTests {
   }
 
   @Test
+  func loadsBoundedThreadMembersNewestFirst() async throws {
+    let context = try await makeStore()
+    defer { context.cleanup() }
+    for (remoteID, receivedAt, state) in [
+      ("thread-old", Int64(100), MailboxState.archive),
+      ("thread-new", Int64(200), MailboxState.inbox),
+    ] {
+      try await context.store.addMessage(
+        NewMessage(
+          accountID: context.accountID,
+          remoteID: remoteID,
+          threadRemoteID: "gmail-thread-1",
+          remoteUID: receivedAt,
+          uidValidity: 1,
+          receivedAt: receivedAt,
+          sender: remoteID,
+          recipients: "me@example.com",
+          cc: "",
+          internetMessageID: "<\(remoteID)@example.com>",
+          subject: "Thread",
+          preview: "",
+          isRead: true,
+          mailboxState: state,
+          bodyPath: nil
+        ))
+    }
+
+    let messages = try await context.store.threadMessages(
+      accountID: context.accountID,
+      remoteThreadID: "gmail-thread-1",
+      limit: 50
+    )
+
+    #expect(messages.map(\.remoteID) == ["thread-new", "thread-old"])
+    #expect(messages.map(\.mailboxState) == [.inbox, .archive])
+    for message in messages {
+      #expect(
+        try await context.store.remoteUID(
+          messageID: message.id,
+          mailboxState: message.mailboxState
+        ) == message.remoteUID
+      )
+    }
+  }
+
+  @Test
   func startupRemovesTransientArchivedBodies() throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("FlitTransientTests-\(UUID().uuidString)", isDirectory: true)

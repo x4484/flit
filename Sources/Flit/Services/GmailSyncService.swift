@@ -97,6 +97,31 @@ actor GmailSyncService {
     return discoveredCount
   }
 
+  func hydrateThread(for message: MessageSummary, limit: Int = 50) async throws
+    -> [MessageSummary]
+  {
+    guard message.accountProvider == "gmail", !message.threadRemoteID.isEmpty else {
+      return [message]
+    }
+    let configuration = try GoogleOAuthConfigurationLoader.load()
+    let provider = provider(
+      accountID: message.accountID,
+      email: message.accountEmail,
+      configuration: configuration
+    )
+    let discovered = try await provider.fetchThread(
+      remoteThreadID: message.threadRemoteID,
+      limit: limit
+    )
+    try await store.applyInboxDiscovery(discovered, accountID: message.accountID)
+    let messages = try await store.threadMessages(
+      accountID: message.accountID,
+      remoteThreadID: message.threadRemoteID,
+      limit: limit
+    )
+    return messages.isEmpty ? [message] : messages
+  }
+
   func fetchBody(for message: MessageSummary) async throws -> URL {
     guard message.accountProvider == "gmail" else {
       throw GmailIMAPProviderError.featureUnavailable
@@ -107,7 +132,11 @@ actor GmailSyncService {
       email: message.accountEmail,
       configuration: configuration
     )
-    guard let remoteUID = message.remoteUID else {
+    let storedRemoteUID = try await store.remoteUID(
+      messageID: message.id,
+      mailboxState: message.mailboxState
+    )
+    guard let remoteUID = storedRemoteUID ?? message.remoteUID else {
       throw GmailIMAPProviderError.messageNotFound
     }
     let url = try await provider.fetchPlainTextBody(
