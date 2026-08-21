@@ -48,14 +48,17 @@ enum GmailIMAPParser {
     )
   }
 
-  static func searchedUIDs(from result: IMAPCommandResult, greaterThan minimum: Int64) -> [Int64] {
+  static func searchedNumbers(from result: IMAPCommandResult) -> [Int64] {
     result.responses
       .filter { $0.line.uppercased().hasPrefix("* SEARCH") }
       .flatMap { response in
         response.line.split(separator: " ").dropFirst(2).compactMap { Int64($0) }
       }
-      .filter { $0 > minimum }
       .sorted()
+  }
+
+  static func searchedUIDs(from result: IMAPCommandResult, greaterThan minimum: Int64) -> [Int64] {
+    searchedNumbers(from: result).filter { $0 > minimum }
   }
 
   static func gmailMessageID(from response: IMAPResponse) -> String? {

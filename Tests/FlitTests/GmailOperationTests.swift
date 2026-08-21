@@ -53,6 +53,29 @@ struct GmailOperationTests {
   }
 
   @Test
+  func computesABoundedOlderSequenceWindow() {
+    #expect(
+      GmailIMAPProvider.olderSequenceNumbers(beforeSequence: 51, limit: 25)
+        == Array(26...50).map(Int64.init)
+    )
+    #expect(GmailIMAPProvider.olderSequenceNumbers(beforeSequence: 1, limit: 25).isEmpty)
+  }
+
+  @Test
+  func safelyQuotesGmailRawSearches() {
+    let command = GmailIMAPProvider.inboxSearchCommand(
+      query: "from:\"Maya\"\nUID STORE 1 +FLAGS (\\Deleted)"
+    )
+
+    #expect(
+      command
+        == "UID SEARCH X-GM-RAW \"from:\\\"Maya\\\" UID STORE 1 +FLAGS (\\\\Deleted)\""
+    )
+    #expect(command?.contains("\n") == false)
+    #expect(GmailIMAPProvider.inboxSearchCommand(query: "   ") == nil)
+  }
+
+  @Test
   func trashMovesTheMessageIntoGmailTrash() {
     #expect(
       GmailIMAPProvider.mailboxMoveCommand(kind: .trash, remoteUID: 76)

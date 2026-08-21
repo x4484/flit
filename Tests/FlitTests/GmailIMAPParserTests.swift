@@ -78,6 +78,7 @@ struct GmailIMAPParserTests {
       IMAPResponse(line: "A0003 OK SEARCH completed", literal: nil),
     ])
 
+    #expect(GmailIMAPParser.searchedNumbers(from: result) == [98, 99, 101, 103])
     #expect(GmailIMAPParser.searchedUIDs(from: result, greaterThan: 99) == [101, 103])
   }
 

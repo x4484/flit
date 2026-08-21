@@ -3,6 +3,8 @@ import Foundation
 actor GmailSyncService {
   private let store: MailStore
   private var providers: [Int64: GmailIMAPProvider] = [:]
+  private var exhaustedOlderAccounts: Set<Int64> = []
+  private var completedRemoteSearches: Set<String> = []
   private var isSyncing = false
 
   init(store: MailStore) {
@@ -16,6 +18,7 @@ actor GmailSyncService {
 
     let accounts = try await store.accounts(provider: "gmail")
     guard !accounts.isEmpty else { return 0 }
+    exhaustedOlderAccounts.subtract(accounts.map(\.id))
 
     let configuration = try GoogleOAuthConfigurationLoader.load()
     var synchronizedMessageCount = 0
@@ -34,6 +37,64 @@ actor GmailSyncService {
     }
     try await store.pruneBodyCache(maximumFiles: 8)
     return synchronizedMessageCount
+  }
+
+  func fetchOlderInboxPage(limit: Int = 100) async throws -> Int {
+    guard !isSyncing else { return 0 }
+    isSyncing = true
+    defer { isSyncing = false }
+
+    let accounts = try await store.accounts(provider: "gmail")
+    guard !accounts.isEmpty else { return 0 }
+    let configuration = try GoogleOAuthConfigurationLoader.load()
+    var discoveredCount = 0
+
+    for account in accounts where !exhaustedOlderAccounts.contains(account.id) {
+      guard let oldestUID = try await store.oldestInboxRemoteUID(accountID: account.id) else {
+        exhaustedOlderAccounts.insert(account.id)
+        continue
+      }
+      let provider = provider(
+        accountID: account.id,
+        email: account.email,
+        configuration: configuration
+      )
+      let messages = try await provider.fetchOlderInbox(
+        beforeRemoteUID: oldestUID,
+        limit: limit
+      )
+      try await store.applyInboxDiscovery(messages, accountID: account.id)
+      discoveredCount += messages.count
+      if messages.count < limit {
+        exhaustedOlderAccounts.insert(account.id)
+      }
+    }
+    return discoveredCount
+  }
+
+  func searchInbox(query: String, limit: Int = 100) async throws -> Int {
+    let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard normalized.count >= 2 else { return 0 }
+
+    let accounts = try await store.accounts(provider: "gmail")
+    guard !accounts.isEmpty else { return 0 }
+    let configuration = try GoogleOAuthConfigurationLoader.load()
+    var discoveredCount = 0
+
+    for account in accounts {
+      let searchKey = "\(account.id):\(normalized.lowercased())"
+      guard !completedRemoteSearches.contains(searchKey) else { continue }
+      let provider = provider(
+        accountID: account.id,
+        email: account.email,
+        configuration: configuration
+      )
+      let messages = try await provider.searchInbox(query: normalized, limit: limit)
+      try await store.applyInboxDiscovery(messages, accountID: account.id)
+      completedRemoteSearches.insert(searchKey)
+      discoveredCount += messages.count
+    }
+    return discoveredCount
   }
 
   func fetchBody(for message: MessageSummary) async throws -> URL {

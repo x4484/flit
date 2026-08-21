@@ -11,6 +11,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
   private let summaryService = OpenRouterSummaryService()
   private var messages: [MessageSummary] = []
   private var searchTask: Task<Void, Never>?
+  private var remoteSearchTask: Task<Void, Never>?
   private var bodyLoadTask: Task<Void, Never>?
   private var summaryTask: Task<Void, Never>?
   private var composeWindowController: ComposeWindowController?
@@ -22,6 +23,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
   private var displayedBodyText = ""
   private var cachedOpenRouterAPIKey: String?
   private var didLoadOpenRouterAPIKey = false
+  private var isLoadingMoreMessages = false
+  private var hasMoreInboxMessages = true
 
   private let tableView = NSTableView()
   private let searchField = NSSearchField()
@@ -130,6 +133,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
       ?? MessageCellView()
     let message = messages[row]
     cell.configure(with: message, dateText: rowDateFormatter.string(from: message.receivedDate))
+    if row >= messages.count - 12 {
+      loadMoreInboxMessagesIfNeeded()
+    }
     return cell
   }
 
@@ -148,9 +154,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
   func controlTextDidChange(_ notification: Notification) {
     searchTask?.cancel()
+    remoteSearchTask?.cancel()
     let query = searchField.stringValue
     searchTask = Task { [weak self] in
-      try? await Task.sleep(nanoseconds: 50_000_000)
+      try? await Task.sleep(nanoseconds: 250_000_000)
       guard !Task.isCancelled else { return }
       self?.loadMessages(query: query)
     }
@@ -619,14 +626,19 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
   private func loadMessages(query: String = "") {
     currentQuery = query
+    let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    if normalizedQuery.isEmpty {
+      hasMoreInboxMessages = true
+    }
+
     Task { [weak self, store] in
       do {
         let loaded =
-          query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+          normalizedQuery.isEmpty
           ? try await store.fetchInbox(limit: 200)
-          : try await store.search(query, limit: 200)
+          : try await store.search(normalizedQuery, limit: 200)
         let inboxCount = try await store.inboxCount()
-        guard let self else { return }
+        guard let self, self.currentQuery == query else { return }
         self.messages = loaded
         self.updateInboxCount(inboxCount)
         self.tableView.reloadData()
@@ -640,8 +652,93 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         } else {
           self.renderSelection()
         }
+
+        if !normalizedQuery.isEmpty {
+          self.searchRemoteInbox(query: normalizedQuery)
+        }
       } catch {
         self?.showError(error)
+      }
+    }
+  }
+
+  private func loadMoreInboxMessagesIfNeeded() {
+    guard currentQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      hasMoreInboxMessages,
+      !isLoadingMoreMessages,
+      let cursor = messages.last?.cursor
+    else { return }
+
+    isLoadingMoreMessages = true
+    Task { [weak self, store, gmailSyncService] in
+      guard let self else { return }
+      defer { self.isLoadingMoreMessages = false }
+      do {
+        var loaded = try await store.fetchInbox(after: cursor, limit: 100)
+        if loaded.isEmpty {
+          let discovered = try await gmailSyncService.fetchOlderInboxPage(limit: 100)
+          if discovered > 0 {
+            loaded = try await store.fetchInbox(after: cursor, limit: 100)
+          }
+        }
+        guard self.currentQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+          return
+        }
+        if loaded.isEmpty {
+          self.hasMoreInboxMessages = false
+          return
+        }
+
+        let existingIDs = Set(self.messages.map(\.id))
+        let newMessages = loaded.filter { !existingIDs.contains($0.id) }
+        guard !newMessages.isEmpty else {
+          self.hasMoreInboxMessages = false
+          return
+        }
+        self.messages.append(contentsOf: newMessages)
+        self.updateInboxCount(try await store.inboxCount())
+        self.tableView.reloadData()
+      } catch {
+        self.hasMoreInboxMessages = true
+      }
+    }
+  }
+
+  private func searchRemoteInbox(query: String) {
+    remoteSearchTask?.cancel()
+    remoteSearchTask = Task { [weak self, store, gmailSyncService] in
+      do {
+        _ = try await gmailSyncService.searchInbox(query: query, limit: 100)
+        guard !Task.isCancelled, let self,
+          self.currentQuery.trimmingCharacters(in: .whitespacesAndNewlines) == query
+        else { return }
+
+        let loaded = try await store.search(query, limit: 200)
+        let selectedID = self.selectedMessageID
+        self.messages = loaded
+        self.updateInboxCount(try await store.inboxCount())
+        self.tableView.reloadData()
+        if let selectedID, let row = loaded.firstIndex(where: { $0.id == selectedID }) {
+          if self.tableView.selectedRow != row {
+            self.suppressNextReadMark = true
+            self.tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+          } else {
+            self.renderSelection()
+          }
+        } else if !loaded.isEmpty {
+          if self.tableView.selectedRow != 0 {
+            self.suppressNextReadMark = true
+            self.tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+          } else {
+            self.renderSelection()
+          }
+        } else {
+          self.renderSelection()
+        }
+      } catch is CancellationError {
+        return
+      } catch {
+        // Local search results remain available when remote search is offline.
       }
     }
   }

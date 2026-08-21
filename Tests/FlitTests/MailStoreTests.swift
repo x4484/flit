@@ -261,6 +261,37 @@ struct MailStoreTests {
   }
 
   @Test
+  func discoversOlderInboxPagesWithoutMovingTheSyncCursor() async throws {
+    let context = try await makeStore(provider: "gmail")
+    defer { context.cleanup() }
+
+    _ = try await context.store.addMessage(
+      NewMessage(
+        accountID: context.accountID, remoteID: "newer", remoteUID: 40,
+        uidValidity: 7, receivedAt: 400, sender: "Newer", recipients: "me@example.com",
+        cc: "", internetMessageID: "", subject: "Newer", preview: "", isRead: false,
+        mailboxState: .inbox, bodyPath: nil
+      ))
+    try await context.store.applyInboxDiscovery(
+      [
+        NewMessage(
+          accountID: context.accountID, remoteID: "older", remoteUID: 20,
+          uidValidity: 7, receivedAt: 200, sender: "Older", recipients: "me@example.com",
+          cc: "", internetMessageID: "", subject: "Older", preview: "", isRead: true,
+          mailboxState: .inbox, bodyPath: nil
+        )
+      ],
+      accountID: context.accountID
+    )
+
+    #expect(try await context.store.oldestInboxRemoteUID(accountID: context.accountID) == 20)
+    let firstPage = try await context.store.fetchInbox(limit: 1)
+    let secondPage = try await context.store.fetchInbox(after: firstPage.last?.cursor, limit: 1)
+    #expect(firstPage.map(\.remoteID) == ["newer"])
+    #expect(secondPage.map(\.remoteID) == ["older"])
+  }
+
+  @Test
   func remoteUnreadStateDoesNotOverridePendingLocalRead() async throws {
     let context = try await makeStore(provider: "gmail")
     defer { context.cleanup() }

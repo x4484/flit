@@ -202,6 +202,80 @@ actor GmailIMAPProvider: MailProvider {
     }
   }
 
+  func fetchOlderInbox(beforeRemoteUID: Int64, limit: Int) async throws -> [NewMessage] {
+    guard (1...Int64(UInt32.max)).contains(beforeRemoteUID), limit > 0 else { return [] }
+    await acquireSession()
+    defer { releaseSession() }
+    try Task.checkCancellation()
+    let transport = try await authenticatedTransport()
+
+    do {
+      let selected = try await transport.execute("EXAMINE \"INBOX\"")
+      let mailbox = try GmailIMAPParser.mailboxState(from: selected)
+      let search = try await transport.execute("SEARCH UID \(beforeRemoteUID)")
+      guard let anchorSequence = GmailIMAPParser.searchedNumbers(from: search).first else {
+        return []
+      }
+      let sequences = Self.olderSequenceNumbers(
+        beforeSequence: anchorSequence,
+        limit: min(limit, Self.maximumMessagesPerSync)
+      )
+      return try await fetchMetadata(
+        sequenceNumbers: sequences,
+        useUIDCommand: false,
+        uidValidity: mailbox.uidValidity,
+        transport: transport
+      )
+    } catch {
+      invalidateTransport(transport)
+      throw error
+    }
+  }
+
+  func searchInbox(query: String, limit: Int) async throws -> [NewMessage] {
+    guard let command = Self.inboxSearchCommand(query: query), limit > 0 else { return [] }
+    await acquireSession()
+    defer { releaseSession() }
+    try Task.checkCancellation()
+    let transport = try await authenticatedTransport()
+
+    do {
+      let selected = try await transport.execute("EXAMINE \"INBOX\"")
+      let mailbox = try GmailIMAPParser.mailboxState(from: selected)
+      let search = try await transport.execute(command)
+      let uids = Array(
+        GmailIMAPParser.searchedUIDs(from: search, greaterThan: 0)
+          .suffix(min(limit, Self.maximumMessagesPerSync))
+      )
+      return try await fetchMetadata(
+        sequenceNumbers: uids,
+        useUIDCommand: true,
+        uidValidity: mailbox.uidValidity,
+        transport: transport
+      )
+    } catch {
+      invalidateTransport(transport)
+      throw error
+    }
+  }
+
+  static func olderSequenceNumbers(beforeSequence: Int64, limit: Int) -> [Int64] {
+    guard beforeSequence > 1, limit > 0 else { return [] }
+    let end = beforeSequence - 1
+    let start = max(1, end - Int64(limit) + 1)
+    return Array(start...end)
+  }
+
+  static func inboxSearchCommand(query: String) -> String? {
+    let normalized = query.replacingOccurrences(of: "\r", with: " ")
+      .replacingOccurrences(of: "\n", with: " ")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !normalized.isEmpty else { return nil }
+    let escaped = normalized.replacingOccurrences(of: "\\", with: "\\\\")
+      .replacingOccurrences(of: "\"", with: "\\\"")
+    return "UID SEARCH X-GM-RAW \"\(escaped)\""
+  }
+
   func fetchPlainTextBody(remoteID: String) async throws -> URL {
     await acquireSession()
     defer { releaseSession() }

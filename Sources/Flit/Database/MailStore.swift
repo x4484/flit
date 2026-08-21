@@ -238,6 +238,26 @@ actor MailStore {
     }
   }
 
+  func oldestInboxRemoteUID(accountID: Int64) throws -> Int64? {
+    let statement = try database.prepare(
+      """
+      SELECT MIN(remote_uid) FROM messages
+      WHERE account_id = ? AND mailbox_state = ? AND remote_uid IS NOT NULL
+      """)
+    try statement.bind(accountID, at: 1)
+    try statement.bind(MailboxState.inbox.rawValue, at: 2)
+    guard try statement.step() else { return nil }
+    return statement.optionalInteger(at: 0)
+  }
+
+  func applyInboxDiscovery(_ messages: [NewMessage], accountID: Int64) throws {
+    try database.transaction {
+      for message in messages where message.accountID == accountID {
+        _ = try upsertMessage(message)
+      }
+    }
+  }
+
   func inboxMessageStates(
     accountID: Int64,
     afterID: Int64? = nil,

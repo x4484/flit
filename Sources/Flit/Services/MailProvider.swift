@@ -62,6 +62,8 @@ protocol MailProvider: Sendable {
   func syncInbox(from cursor: SyncCursor?) async throws -> SyncResult
   func reconcileInbox(_ messages: [LocalInboxMessageState]) async throws
     -> InboxReconciliationResult
+  func fetchOlderInbox(beforeRemoteUID: Int64, limit: Int) async throws -> [NewMessage]
+  func searchInbox(query: String, limit: Int) async throws -> [NewMessage]
   func fetchPlainTextBody(remoteID: String) async throws -> URL
   func markRead(remoteID: String) async throws
   func archive(remoteID: String) async throws
