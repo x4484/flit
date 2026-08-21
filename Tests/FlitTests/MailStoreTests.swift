@@ -284,7 +284,25 @@ struct MailStoreTests {
       accountID: context.accountID
     )
 
+    try await context.store.applyInboxDiscovery(
+      [
+        NewMessage(
+          accountID: context.accountID, remoteID: "newer", remoteUID: 999,
+          uidValidity: 99, receivedAt: 400, sender: "Newer", recipients: "me@example.com",
+          cc: "", internetMessageID: "", subject: "Newer", preview: "", isRead: false,
+          mailboxState: .archive, bodyPath: nil
+        )
+      ],
+      accountID: context.accountID
+    )
+
     #expect(try await context.store.oldestInboxRemoteUID(accountID: context.accountID) == 20)
+    let currentState = try #require(
+      try await context.store.inboxMessageStates(accountID: context.accountID)
+        .first(where: { $0.remoteID == "newer" })
+    )
+    #expect(currentState.remoteUID == 40)
+    #expect(currentState.uidValidity == 7)
     let firstPage = try await context.store.fetchInbox(limit: 1)
     let secondPage = try await context.store.fetchInbox(after: firstPage.last?.cursor, limit: 1)
     #expect(firstPage.map(\.remoteID) == ["newer"])

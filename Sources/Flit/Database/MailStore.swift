@@ -515,8 +515,16 @@ actor MailStore {
           mailbox_state, body_path
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(account_id, remote_id) DO UPDATE SET
-          remote_uid = excluded.remote_uid,
-          uid_validity = excluded.uid_validity,
+          remote_uid = CASE
+            WHEN messages.mailbox_state = 0 AND excluded.mailbox_state = 1
+              THEN messages.remote_uid
+            ELSE excluded.remote_uid
+          END,
+          uid_validity = CASE
+            WHEN messages.mailbox_state = 0 AND excluded.mailbox_state = 1
+              THEN messages.uid_validity
+            ELSE excluded.uid_validity
+          END,
           received_at = excluded.received_at,
           sender = excluded.sender,
           recipients = excluded.recipients,
@@ -536,6 +544,8 @@ actor MailStore {
               SELECT 1 FROM pending_operations
               WHERE message_id = messages.id AND operation IN (0, 1)
             ) THEN messages.mailbox_state
+            WHEN messages.mailbox_state = 0 AND excluded.mailbox_state = 1
+              THEN messages.mailbox_state
             ELSE excluded.mailbox_state
           END,
           body_path = COALESCE(excluded.body_path, messages.body_path)

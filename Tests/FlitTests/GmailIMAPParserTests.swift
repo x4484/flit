@@ -51,7 +51,18 @@ struct GmailIMAPParserTests {
     #expect(message.internetMessageID == "<project-99@example.com>")
     #expect(message.subject == "Project ✓")
     #expect(message.isRead)
+    #expect(message.mailboxState == .inbox)
     #expect(message.preview.isEmpty)
+
+    let archivedMessage = try #require(
+      try GmailIMAPParser.message(
+        from: response,
+        accountID: 7,
+        uidValidity: 456,
+        mailboxState: .archive
+      ))
+    #expect(archivedMessage.mailboxState == .archive)
+    #expect(archivedMessage.uidValidity == 456)
   }
 
   @Test

@@ -233,26 +233,57 @@ actor GmailIMAPProvider: MailProvider {
   }
 
   func searchInbox(query: String, limit: Int) async throws -> [NewMessage] {
-    guard let command = Self.inboxSearchCommand(query: query), limit > 0 else { return [] }
+    guard let inboxCommand = Self.inboxSearchCommand(query: query), limit > 0 else { return [] }
     await acquireSession()
     defer { releaseSession() }
     try Task.checkCancellation()
     let transport = try await authenticatedTransport()
 
     do {
-      let selected = try await transport.execute("EXAMINE \"INBOX\"")
-      let mailbox = try GmailIMAPParser.mailboxState(from: selected)
-      let search = try await transport.execute(command)
-      let uids = Array(
-        GmailIMAPParser.searchedUIDs(from: search, greaterThan: 0)
-          .suffix(min(limit, Self.maximumMessagesPerSync))
+      let boundedLimit = min(limit, Self.maximumMessagesPerSync)
+      let selectedInbox = try await transport.execute("EXAMINE \"INBOX\"")
+      let inbox = try GmailIMAPParser.mailboxState(from: selectedInbox)
+      let inboxSearch = try await transport.execute(inboxCommand)
+      let inboxUIDs = Array(
+        GmailIMAPParser.searchedUIDs(from: inboxSearch, greaterThan: 0)
+          .suffix(boundedLimit)
       )
-      return try await fetchMetadata(
-        sequenceNumbers: uids,
+      let inboxMessages = try await fetchMetadata(
+        sequenceNumbers: inboxUIDs,
         useUIDCommand: true,
-        uidValidity: mailbox.uidValidity,
+        uidValidity: inbox.uidValidity,
+        mailboxState: .inbox,
         transport: transport
       )
+
+      let remainingLimit = max(0, boundedLimit - inboxMessages.count)
+      guard remainingLimit > 0,
+        let archiveCommand = Self.inboxSearchCommand(query: "\(query) -label:inbox")
+      else { return inboxMessages }
+
+      let selectedAllMail = try await transport.execute("EXAMINE \"[Gmail]/All Mail\"")
+      let allMail = try GmailIMAPParser.mailboxState(from: selectedAllMail)
+      let archiveSearch = try await transport.execute(archiveCommand)
+      let archiveUIDs = Array(
+        GmailIMAPParser.searchedUIDs(from: archiveSearch, greaterThan: 0)
+          .suffix(remainingLimit)
+      )
+      let archiveMessages = try await fetchMetadata(
+        sequenceNumbers: archiveUIDs,
+        useUIDCommand: true,
+        uidValidity: allMail.uidValidity,
+        mailboxState: .archive,
+        transport: transport
+      )
+
+      var messagesByRemoteID = Dictionary(
+        archiveMessages.map { ($0.remoteID, $0) },
+        uniquingKeysWith: { _, latest in latest }
+      )
+      for message in inboxMessages {
+        messagesByRemoteID[message.remoteID] = message
+      }
+      return messagesByRemoteID.values.sorted { $0.receivedAt > $1.receivedAt }
     } catch {
       invalidateTransport(transport)
       throw error
@@ -617,6 +648,7 @@ actor GmailIMAPProvider: MailProvider {
     sequenceNumbers: [Int64],
     useUIDCommand: Bool,
     uidValidity: Int64,
+    mailboxState: MailboxState = .inbox,
     transport: IMAPTransport
   ) async throws -> [NewMessage] {
     var messages: [NewMessage] = []
@@ -635,7 +667,8 @@ actor GmailIMAPProvider: MailProvider {
         if let message = try GmailIMAPParser.message(
           from: response,
           accountID: accountID,
-          uidValidity: uidValidity
+          uidValidity: uidValidity,
+          mailboxState: mailboxState
         ) {
           messages.append(message)
         }

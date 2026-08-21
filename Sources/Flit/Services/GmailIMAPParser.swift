@@ -88,7 +88,8 @@ enum GmailIMAPParser {
   static func message(
     from response: IMAPResponse,
     accountID: Int64,
-    uidValidity: Int64
+    uidValidity: Int64,
+    mailboxState: MailboxState = .inbox
   ) throws -> NewMessage? {
     guard response.line.uppercased().contains(" FETCH ") else { return nil }
     guard let uidText = firstCapture(#"\bUID\s+(\d+)\b"#, in: response.line),
@@ -120,7 +121,7 @@ enum GmailIMAPParser {
       subject: decodedHeader(headers["subject"] ?? ""),
       preview: "",
       isRead: flags.uppercased().contains("\\SEEN"),
-      mailboxState: .inbox,
+      mailboxState: mailboxState,
       bodyPath: nil
     )
   }

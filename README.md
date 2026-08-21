@@ -97,7 +97,7 @@ See [the interface direction](docs/interface-direction.md) for the native design
 - [x] Streaming IMAP transport and bounded incremental UID sync
 - [x] Replicate queued Gmail archive, trash, and read operations
 - [x] Reconcile remote Gmail moves, deletions, and read-state changes
-- [x] Load older Gmail inbox pages and search unsynchronized inbox headers
+- [x] Load older Gmail inbox pages and search unsynchronized inbox and archived headers
 - [x] Plain-text MIME body selection and bounded cache
 - [x] Gmail SMTP reply, reply-all, and forward
 - [x] Cached one-sentence OpenRouter summaries
