@@ -470,6 +470,50 @@ struct MailStoreTests {
   }
 
   @Test
+  func readingCachedBodyProtectsItFromLRUPruning() async throws {
+    let context = try await makeStore()
+    defer { context.cleanup() }
+
+    var messageIDs: [Int64] = []
+    var bodyURLs: [URL] = []
+    for index in 0..<3 {
+      let bodyURL = context.directory.appendingPathComponent("touched-body-\(index).txt")
+      try Data("Body \(index)".utf8).write(to: bodyURL)
+      try FileManager.default.setAttributes(
+        [.modificationDate: Date(timeIntervalSince1970: TimeInterval(index + 1))],
+        ofItemAtPath: bodyURL.path
+      )
+      bodyURLs.append(bodyURL)
+      messageIDs.append(
+        try await context.store.addMessage(
+          NewMessage(
+            accountID: context.accountID,
+            remoteID: "touched-cache-\(index)",
+            remoteUID: Int64(index + 1),
+            uidValidity: 1,
+            receivedAt: Int64(index + 1),
+            sender: "Sender",
+            recipients: "me@example.com",
+            cc: "",
+            internetMessageID: "",
+            subject: "Touched \(index)",
+            preview: "",
+            isRead: true,
+            mailboxState: .inbox,
+            bodyPath: bodyURL.path
+          ))
+      )
+    }
+
+    try await context.store.touchCachedBody(messageID: messageIDs[0])
+    try await context.store.pruneBodyCache(maximumFiles: 2)
+
+    #expect(FileManager.default.fileExists(atPath: bodyURLs[0].path))
+    #expect(!FileManager.default.fileExists(atPath: bodyURLs[1].path))
+    #expect(FileManager.default.fileExists(atPath: bodyURLs[2].path))
+  }
+
+  @Test
   func deduplicatesRepeatedPendingOperations() async throws {
     let context = try await makeStore(provider: "gmail")
     defer { context.cleanup() }

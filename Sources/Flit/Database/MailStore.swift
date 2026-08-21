@@ -199,6 +199,21 @@ actor MailStore {
     return true
   }
 
+  func touchCachedBody(messageID: Int64) throws {
+    let statement = try database.prepare(
+      "SELECT body_path FROM messages WHERE id = ? AND mailbox_state = ?")
+    try statement.bind(messageID, at: 1)
+    try statement.bind(MailboxState.inbox.rawValue, at: 2)
+    guard try statement.step(), let path = statement.optionalText(at: 0),
+      FileManager.default.fileExists(atPath: path)
+    else { return }
+
+    try FileManager.default.setAttributes(
+      [.modificationDate: Date()],
+      ofItemAtPath: path
+    )
+  }
+
   @discardableResult
   func savePreview(_ preview: String, for messageID: Int64) throws -> Bool {
     guard !preview.isEmpty else { return false }
