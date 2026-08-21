@@ -199,6 +199,17 @@ actor MailStore {
     return true
   }
 
+  @discardableResult
+  func savePreview(_ preview: String, for messageID: Int64) throws -> Bool {
+    guard !preview.isEmpty else { return false }
+    let statement = try database.prepare(
+      "UPDATE messages SET preview = ? WHERE id = ? AND preview = ''")
+    try statement.bind(preview, at: 1)
+    try statement.bind(messageID, at: 2)
+    try statement.step()
+    return database.changedRowCount > 0
+  }
+
   func summary(for messageID: Int64) throws -> String? {
     let statement = try database.prepare("SELECT summary FROM messages WHERE id = ?")
     try statement.bind(messageID, at: 1)
@@ -589,7 +600,10 @@ actor MailStore {
           cc = excluded.cc,
           internet_message_id = excluded.internet_message_id,
           subject = excluded.subject,
-          preview = excluded.preview,
+          preview = CASE
+            WHEN excluded.preview = '' THEN messages.preview
+            ELSE excluded.preview
+          END,
           flags = CASE
             WHEN EXISTS (
               SELECT 1 FROM pending_operations

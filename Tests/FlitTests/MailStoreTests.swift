@@ -85,6 +85,33 @@ struct MailStoreTests {
         ) == message.remoteUID
       )
     }
+
+    let oldMessage = try #require(messages.last)
+    #expect(try await context.store.savePreview("Locally generated snippet", for: oldMessage.id))
+    try await context.store.addMessage(
+      NewMessage(
+        accountID: context.accountID,
+        remoteID: oldMessage.remoteID,
+        threadRemoteID: oldMessage.threadRemoteID,
+        remoteUID: oldMessage.remoteUID,
+        uidValidity: 1,
+        receivedAt: oldMessage.receivedAt,
+        sender: oldMessage.sender,
+        recipients: oldMessage.recipients,
+        cc: "",
+        internetMessageID: oldMessage.internetMessageID,
+        subject: oldMessage.subject,
+        preview: "",
+        isRead: true,
+        mailboxState: .archive,
+        bodyPath: nil
+      ))
+    let refreshed = try await context.store.threadMessages(
+      accountID: context.accountID,
+      remoteThreadID: "gmail-thread-1"
+    )
+    #expect(refreshed.last?.preview == "Locally generated snippet")
+    #expect(try await context.store.search("generated").map(\.id) == [oldMessage.id])
   }
 
   @Test

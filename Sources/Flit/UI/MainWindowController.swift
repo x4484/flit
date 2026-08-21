@@ -14,9 +14,12 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
   private var activeMessageID: Int64?
   private var selectedThreadRemoteID: String?
   private var isUpdatingThreadSelection = false
+  private var isRestoringSidebarSelection = false
   private var searchTask: Task<Void, Never>?
   private var remoteSearchTask: Task<Void, Never>?
   private var threadLoadTask: Task<Void, Never>?
+  private var sentThreadRefreshTask: Task<Void, Never>?
+  private var periodicSyncTask: Task<Void, Never>?
   private var bodyLoadTask: Task<Void, Never>?
   private var summaryTask: Task<Void, Never>?
   private var composeWindowController: ComposeWindowController?
@@ -30,6 +33,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
   private var cachedOpenRouterAPIKey: String?
   private var didLoadOpenRouterAPIKey = false
   private var isLoadingMoreMessages = false
+  private var isSynchronizingGmail = false
   private var hasMoreInboxMessages = true
 
   private let tableView = NSTableView()
@@ -116,11 +120,17 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     splitController.splitView.setPosition(1_020, ofDividerAt: 1)
 
     loadMessages()
+    startPeriodicSynchronization()
   }
 
   @available(*, unavailable)
   required init?(coder: NSCoder) {
     fatalError("init(coder:) has not been implemented")
+  }
+
+  deinit {
+    periodicSyncTask?.cancel()
+    sentThreadRefreshTask?.cancel()
   }
 
   override func showWindow(_ sender: Any?) {
@@ -180,6 +190,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
       return
     }
 
+    if changedTable === tableView, isRestoringSidebarSelection { return }
     guard changedTable === tableView, messages.indices.contains(tableView.selectedRow) else {
       activeMessageID = nil
       selectedThreadRemoteID = nil
@@ -358,18 +369,47 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
   }
 
   private func synchronizeGmail(showErrors: Bool) {
-    refreshButton.isEnabled = false
-    Task { [weak self, gmailSyncService] in
-      do {
-        _ = try await gmailSyncService.syncAllAccounts()
-        guard let self else { return }
-        self.loadMessages(query: self.searchField.stringValue)
-      } catch {
-        if showErrors {
-          self?.showError(error)
+    Task { [weak self] in
+      await self?.performGmailSynchronization(
+        showErrors: showErrors,
+        showsActivity: true
+      )
+    }
+  }
+
+  private func performGmailSynchronization(showErrors: Bool, showsActivity: Bool) async {
+    guard !isSynchronizingGmail else { return }
+    isSynchronizingGmail = true
+    if showsActivity { refreshButton.isEnabled = false }
+    defer {
+      isSynchronizingGmail = false
+      if showsActivity { refreshButton.isEnabled = true }
+    }
+
+    do {
+      _ = try await gmailSyncService.syncAllAccounts()
+      try await reloadMessagesPreservingContext()
+    } catch {
+      if showErrors { showError(error) }
+    }
+  }
+
+  private func startPeriodicSynchronization() {
+    periodicSyncTask?.cancel()
+    periodicSyncTask = Task { [weak self] in
+      while !Task.isCancelled {
+        do {
+          try await Task.sleep(nanoseconds: 60_000_000_000)
+        } catch {
+          return
         }
+        guard let self else { return }
+        guard self.window?.isVisible == true else { continue }
+        await self.performGmailSynchronization(
+          showErrors: false,
+          showsActivity: false
+        )
       }
-      self?.refreshButton.isEnabled = true
     }
   }
 
@@ -782,6 +822,101 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
   }
 
+  private func reloadMessagesPreservingContext() async throws {
+    let query = currentQuery
+    let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    let sidebarMessageID = messages.indices.contains(tableView.selectedRow)
+      ? messages[tableView.selectedRow].id : nil
+    let activeMessage = selectedMessage
+    let activeID = activeMessageID
+    let expectedThreadID = selectedThreadRemoteID
+
+    let retainedLimit = max(200, messages.count)
+    let loaded = normalizedQuery.isEmpty
+      ? try await store.fetchInbox(limit: retainedLimit)
+      : try await store.search(normalizedQuery, limit: retainedLimit)
+    let count = try await store.inboxCount()
+    guard currentQuery == query else { return }
+
+    messages = loaded
+    updateInboxCount(count)
+    isRestoringSidebarSelection = true
+    tableView.reloadData()
+    if let sidebarMessageID,
+      let row = loaded.firstIndex(where: { $0.id == sidebarMessageID })
+    {
+      tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+    } else {
+      tableView.deselectAll(nil)
+    }
+    isRestoringSidebarSelection = false
+
+    if let activeMessage, let expectedThreadID, !expectedThreadID.isEmpty {
+      var refreshedThread = try await store.threadMessages(
+        accountID: activeMessage.accountID,
+        remoteThreadID: expectedThreadID,
+        limit: 50
+      )
+      if activeMessage.accountProvider == "gmail",
+        let hydratedThread = try? await gmailSyncService.hydrateThread(
+          for: activeMessage,
+          limit: 50
+        ),
+        !hydratedThread.isEmpty
+      {
+        refreshedThread = hydratedThread
+      }
+      guard selectedThreadRemoteID == expectedThreadID else { return }
+      if !refreshedThread.isEmpty {
+        threadMessages = refreshedThread
+        activeMessageID = activeID.flatMap { id in
+          refreshedThread.contains(where: { $0.id == id }) ? id : nil
+        }
+        updateThreadNavigator()
+        renderSelection(loadBodyIfMissing: false)
+        return
+      }
+    } else if let activeID,
+      let refreshedMessage = loaded.first(where: { $0.id == activeID })
+    {
+      activeMessageID = refreshedMessage.id
+      threadMessages = [refreshedMessage]
+      selectedThreadRemoteID = refreshedMessage.threadRemoteID.isEmpty
+        ? nil : refreshedMessage.threadRemoteID
+      updateThreadNavigator()
+      renderSelection(loadBodyIfMissing: false)
+      return
+    }
+
+    if activeMessage != nil {
+      activeMessageID = nil
+      selectedThreadRemoteID = nil
+      threadMessages = []
+      updateThreadNavigator()
+      renderSelection(loadBodyIfMissing: false)
+      return
+    }
+
+    guard let first = loaded.first else {
+      activeMessageID = nil
+      selectedThreadRemoteID = nil
+      threadMessages = []
+      updateThreadNavigator()
+      renderSelection()
+      return
+    }
+    suppressNextReadMark = true
+    tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+    if tableView.selectedRow != 0 {
+      activeMessageID = first.id
+      selectedThreadRemoteID = first.threadRemoteID.isEmpty ? nil : first.threadRemoteID
+      threadMessages = [first]
+      updateThreadNavigator()
+      renderSelection()
+      loadThread(for: first)
+    }
+  }
+
   private func loadMoreInboxMessagesIfNeeded() {
     guard currentQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
       hasMoreInboxMessages,
@@ -902,6 +1037,51 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
   }
 
+  private func refreshOpenThread(expectedThreadID: String) async -> Int? {
+    guard selectedThreadRemoteID == expectedThreadID,
+      let anchor = selectedMessage,
+      anchor.accountProvider == "gmail"
+    else { return nil }
+    let preservedActiveID = activeMessageID
+
+    do {
+      let refreshed = try await gmailSyncService.hydrateThread(for: anchor, limit: 50)
+      guard selectedThreadRemoteID == expectedThreadID, !refreshed.isEmpty else { return nil }
+      threadMessages = refreshed
+      activeMessageID = preservedActiveID.flatMap { id in
+        refreshed.contains(where: { $0.id == id }) ? id : nil
+      } ?? refreshed.first?.id
+      updateThreadNavigator()
+      if activeMessageID != preservedActiveID { renderSelection() }
+      return refreshed.count
+    } catch {
+      return nil
+    }
+  }
+
+  private func refreshThreadAfterSend() {
+    sentThreadRefreshTask?.cancel()
+    guard let expectedThreadID = selectedThreadRemoteID else { return }
+    let previousCount = threadMessages.count
+    sentThreadRefreshTask = Task { [weak self] in
+      for delay in [750_000_000, 2_000_000_000, 4_000_000_000] as [UInt64] {
+        do {
+          try await Task.sleep(nanoseconds: delay)
+        } catch {
+          return
+        }
+        guard !Task.isCancelled, let self,
+          self.selectedThreadRemoteID == expectedThreadID
+        else { return }
+        if let refreshedCount = await self.refreshOpenThread(expectedThreadID: expectedThreadID),
+          refreshedCount > previousCount
+        {
+          return
+        }
+      }
+    }
+  }
+
   private func updateThreadNavigator() {
     let showsThread = threadMessages.count > 1
     threadHeadingLabel.stringValue = "Thread · \(threadMessages.count)"
@@ -1015,21 +1195,25 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
   }
 
-  private func renderSelection() {
-    bodyLoadTask?.cancel()
-    summaryTask?.cancel()
-    let selectedID = activeMessageID
-    cleanupTransientBodyCache(keeping: selectedID)
+  private func renderSelection(loadBodyIfMissing: Bool = true) {
+    if loadBodyIfMissing {
+      bodyLoadTask?.cancel()
+      summaryTask?.cancel()
+      cleanupTransientBodyCache(keeping: activeMessageID)
+    }
     guard let message = selectedMessage else {
       fromLabel.stringValue = ""
       toLabel.stringValue = ""
       ccLabel.stringValue = ""
-      subjectLabel.stringValue = currentQuery.isEmpty ? "Inbox is clear" : "No results"
+      let hasThreadContext = !threadMessages.isEmpty
+      subjectLabel.stringValue = hasThreadContext
+        ? "Message no longer available"
+        : (currentQuery.isEmpty ? "Inbox is clear" : "No results")
       metadataLabel.stringValue = ""
       setBodyText(
-        currentQuery.isEmpty
-          ? "New messages will appear here."
-          : "Try a different search."
+        hasThreadContext
+          ? "Select another message in the thread."
+          : (currentQuery.isEmpty ? "New messages will appear here." : "Try a different search.")
       )
       setSummaryText("Open an email to see its summary.")
       replyButton.isEnabled = false
@@ -1046,19 +1230,26 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     subjectLabel.stringValue = message.subject.isEmpty ? "(No subject)" : message.subject
     metadataLabel.stringValue =
       "\(message.accountName) · \(rowDateFormatter.string(from: message.receivedDate))"
-    loadCachedSummary(for: message)
-    if let cachedURL = cachedBodyURLs[message.id] ?? message.bodyPath.map({ URL(fileURLWithPath: $0) }) {
-      setBodyText("Loading message…")
-      loadBodyText(from: cachedURL, for: message.id)
-    } else if message.accountProvider == "gmail" && message.mailboxState != .trash {
-      setBodyText("Loading message…")
-      fetchBody(for: message)
-    } else {
-      let body = message.preview.isEmpty ? "Message body isn’t available." : message.preview
-      setBodyText(body)
-      if message.mailboxState == .inbox, !message.preview.isEmpty {
-        startSummary(for: message, readableBody: message.preview)
+    if loadBodyIfMissing {
+      loadCachedSummary(for: message)
+      if let cachedURL = cachedBodyURLs[message.id]
+        ?? message.bodyPath.map({ URL(fileURLWithPath: $0) })
+      {
+        setBodyText("Loading message…")
+        loadBodyText(from: cachedURL, for: message.id)
+      } else if message.accountProvider == "gmail" && message.mailboxState != .trash {
+        setBodyText("Loading message…")
+        fetchBody(for: message)
+      } else {
+        let body = message.preview.isEmpty ? "Message body isn’t available." : message.preview
+        setBodyText(body)
+        if message.mailboxState == .inbox, !message.preview.isEmpty {
+          startSummary(for: message, readableBody: message.preview)
+        }
       }
+    } else if message.mailboxState != .inbox {
+      summaryTask?.cancel()
+      setSummaryText("Summaries are available for Inbox messages.")
     }
     let canSend = message.accountProvider == "gmail"
     replyButton.isEnabled = canSend
@@ -1127,6 +1318,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
       self?.composeWindowController = nil
       if response == .OK {
         self?.showMessage(title: "Message sent", message: "Your message was sent with Gmail.")
+        self?.refreshThreadAfterSend()
       }
     }
     composer.focusInitialField()
@@ -1150,6 +1342,23 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     label.attributedStringValue = text
     label.toolTip = value.isEmpty ? nil : value
     label.setAccessibilityLabel(value.isEmpty ? "\(title): none" : "\(title): \(value)")
+  }
+
+  private func applySavedPreview(_ preview: String, to messageID: Int64) {
+    if let row = messages.firstIndex(where: { $0.id == messageID }) {
+      messages[row].preview = preview
+      tableView.reloadData(
+        forRowIndexes: IndexSet(integer: row),
+        columnIndexes: IndexSet(integersIn: 0..<tableView.numberOfColumns)
+      )
+    }
+    if let row = threadMessages.firstIndex(where: { $0.id == messageID }) {
+      threadMessages[row].preview = preview
+      threadTableView.reloadData(
+        forRowIndexes: IndexSet(integer: row),
+        columnIndexes: IndexSet(integersIn: 0..<threadTableView.numberOfColumns)
+      )
+    }
   }
 
   private func cleanupTransientBodyCache(keeping messageID: Int64?) {
@@ -1200,8 +1409,15 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
           readableBody = MIMETextExtractor.readableText(text)
           self.setBodyText(text.isEmpty ? "This message has no readable text." : text)
         }
-        if let message = self.threadMessages.first(where: { $0.id == messageID })
-          ?? self.messages.first(where: { $0.id == messageID }),
+        let preview = MessagePreview.make(from: readableBody)
+        if !preview.isEmpty,
+          (try? await self.store.savePreview(preview, for: messageID)) == true
+        {
+          self.applySavedPreview(preview, to: messageID)
+        }
+        if self.selectedMessageID == messageID,
+          let message = self.threadMessages.first(where: { $0.id == messageID })
+            ?? self.messages.first(where: { $0.id == messageID }),
           message.mailboxState == .inbox,
           !readableBody.isEmpty
         {

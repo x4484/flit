@@ -114,12 +114,11 @@ actor GmailSyncService {
       limit: limit
     )
     try await store.applyInboxDiscovery(discovered, accountID: message.accountID)
-    let messages = try await store.threadMessages(
+    return try await store.threadMessages(
       accountID: message.accountID,
       remoteThreadID: message.threadRemoteID,
       limit: limit
     )
-    return messages.isEmpty ? [message] : messages
   }
 
   func fetchBody(for message: MessageSummary) async throws -> URL {

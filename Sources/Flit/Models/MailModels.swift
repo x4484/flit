@@ -41,7 +41,7 @@ struct MessageSummary: Sendable, Equatable, Identifiable {
   let cc: String
   let internetMessageID: String
   let subject: String
-  let preview: String
+  var preview: String
   var isRead: Bool
   let mailboxState: MailboxState
   let bodyPath: String?
