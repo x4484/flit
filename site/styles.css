@@ -277,6 +277,7 @@ footer a { color: inherit; }
 
   .github-link { color: #07101f; background: #f8faff; }
   .github-link:hover { color: #07101f; background: #dfe8f8; }
+  .brand img,
   .hero-logo { filter: invert(1) hue-rotate(180deg); }
   pre { background: #050b14; }
 }
