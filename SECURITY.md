@@ -1,5 +1,7 @@
 # Security
 
-Flit is pre-alpha and does not yet connect to mail providers.
+Flit is pre-alpha and can connect to Gmail through OAuth 2.0, TLS IMAP, and TLS SMTP. Gmail refresh tokens and optional OpenRouter API keys are stored in macOS Keychain, access tokens remain in memory, and local OAuth configuration is excluded from version control. Initial synchronization stores message headers only and processes responses in bounded batches. Message bodies are fetched only when opened and capped to a 1 MiB IMAP preview. HTML mail renders in an isolated, non-persistent WebKit view with JavaScript, frames, active content, forms, and in-app navigation disabled. Remote images, fonts, and styles are loaded for sender-authored fidelity; these requests can disclose the recipient's IP address and open event to senders. Owner-readable body cache files have an eight-file global cap and are deleted locally after archive or trash.
 
-Please report vulnerabilities privately through GitHub's security advisory feature rather than opening a public issue. Do not include access tokens, app-specific passwords, email content, or other personal data in reports.
+When AI summaries are enabled, Flit sends the sender, subject, and up to 24,000 characters of readable email body text to OpenRouter using `inclusionai/ling-3.0-flash`. Only the resulting one-sentence summary is stored in SQLite, and it is deleted when the message is archived or trashed.
+
+Please report vulnerabilities privately through GitHub's security advisory feature rather than opening a public issue. Do not include OAuth client files, access or refresh tokens, app-specific passwords, email content, or other personal data in reports.

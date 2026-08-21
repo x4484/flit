@@ -1,6 +1,6 @@
 import Foundation
 
-struct SyncCursor: Sendable {
+struct SyncCursor: Sendable, Equatable {
   let uidValidity: Int64?
   let highestUID: Int64?
   let highestModSequence: String?
@@ -12,11 +12,19 @@ struct SyncResult: Sendable {
   let cursor: SyncCursor
 }
 
-struct OutgoingMessage: Sendable {
+extension SyncResult {
+  static func empty(cursor: SyncCursor) -> SyncResult {
+    SyncResult(messages: [], removedRemoteIDs: [], cursor: cursor)
+  }
+}
+
+struct OutgoingMessage: Sendable, Equatable {
   let sender: String
   let recipients: [String]
+  let ccRecipients: [String]
   let subject: String
   let plainTextBody: String
+  let inReplyTo: String?
 }
 
 protocol MailProvider: Sendable {

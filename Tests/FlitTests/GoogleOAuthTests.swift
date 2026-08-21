@@ -37,6 +37,23 @@ struct GoogleOAuthTests {
   }
 
   @Test
+  func loopbackCallbackPreservesTheAuthorizedRedirectPort() throws {
+    let callbackBaseURL = try #require(
+      URL(string: "http://127.0.0.1:49152/oauth2/callback"))
+    let request =
+      "GET /oauth2/callback?code=authorization-code&state=state HTTP/1.1\r\nHost: 127.0.0.1:49152\r\n\r\n"
+
+    let redirectURL = try #require(
+      LoopbackOAuthReceiver.redirectURL(from: request, relativeTo: callbackBaseURL))
+
+    #expect(redirectURL.scheme == "http")
+    #expect(redirectURL.host == "127.0.0.1")
+    #expect(redirectURL.port == 49152)
+    #expect(redirectURL.path == "/oauth2/callback")
+    #expect(URLComponents(url: redirectURL, resolvingAgainstBaseURL: false)?.queryItems?.count == 2)
+  }
+
+  @Test
   func xoauth2ResponseUsesGoogleSASLFormat() throws {
     let encoded = GmailXOAUTH2.initialClientResponse(
       email: "person@example.com",

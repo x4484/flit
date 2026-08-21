@@ -18,6 +18,8 @@ struct MailStoreTests {
         receivedAt: 1_700_000_000,
         sender: "Maya Chen",
         recipients: "me@example.com",
+        cc: "team@example.com",
+        internetMessageID: "<quarterly@example.com>",
         subject: "Quarterly planning",
         preview: "Notes for the planning session",
         isRead: false,
@@ -25,11 +27,15 @@ struct MailStoreTests {
         bodyPath: nil
       ))
 
-    #expect(try await context.store.fetchInbox().count == 1)
+    let inbox = try await context.store.fetchInbox()
+    #expect(inbox.count == 1)
+    #expect(inbox.first?.cc == "team@example.com")
+    #expect(try await context.store.inboxCount() == 1)
 
     try await context.store.archive(messageID: messageID)
 
     #expect(try await context.store.fetchInbox().isEmpty)
+    #expect(try await context.store.inboxCount() == 0)
     let results = try await context.store.search("quarterly")
     #expect(results.map(\.id) == [messageID])
     #expect(results.first?.mailboxState == .archive)
@@ -52,6 +58,8 @@ struct MailStoreTests {
         receivedAt: 1_700_000_000,
         sender: "Alex Rivera",
         recipients: "me@example.com",
+        cc: "",
+        internetMessageID: "",
         subject: "A cached message",
         preview: "Cached body",
         isRead: true,
@@ -63,6 +71,37 @@ struct MailStoreTests {
 
     #expect(!FileManager.default.fileExists(atPath: bodyURL.path))
     #expect(try await context.store.search("cached").first?.bodyPath == nil)
+  }
+
+  @Test
+  func cachesSummaryUntilMessageLeavesTheInbox() async throws {
+    let context = try await makeStore()
+    defer { context.cleanup() }
+
+    let messageID = try await context.store.addMessage(
+      NewMessage(
+        accountID: context.accountID,
+        remoteID: "summarized-message",
+        remoteUID: 10,
+        uidValidity: 2,
+        receivedAt: 1_700_000_000,
+        sender: "Maya Chen",
+        recipients: "me@example.com",
+        cc: "",
+        internetMessageID: "",
+        subject: "A summarized message",
+        preview: "Summary source",
+        isRead: false,
+        mailboxState: .inbox,
+        bodyPath: nil
+      ))
+
+    #expect(try await context.store.saveSummary("One concise sentence.", for: messageID))
+    #expect(try await context.store.summary(for: messageID) == "One concise sentence.")
+
+    try await context.store.archive(messageID: messageID)
+
+    #expect(try await context.store.summary(for: messageID) == nil)
   }
 
   @Test
@@ -80,6 +119,8 @@ struct MailStoreTests {
           receivedAt: Int64(100 + index),
           sender: "Sender \(index)",
           recipients: "me@example.com",
+          cc: "",
+          internetMessageID: "",
           subject: "Message \(index)",
           preview: "",
           isRead: false,
@@ -95,7 +136,234 @@ struct MailStoreTests {
     #expect(secondPage.map(\.receivedAt) == [102, 101])
   }
 
-  private func makeStore() async throws -> TestContext {
+  @Test
+  func inboxSyncDoesNotUndoAPendingOptimisticArchive() async throws {
+    let context = try await makeStore()
+    defer { context.cleanup() }
+
+    let remoteMessage = NewMessage(
+      accountID: context.accountID,
+      remoteID: "pending-archive",
+      remoteUID: 203,
+      uidValidity: 17,
+      receivedAt: 1_700_000_000,
+      sender: "Gmail Sender",
+      recipients: "me@example.com",
+      cc: "",
+      internetMessageID: "",
+      subject: "Keep archived",
+      preview: "",
+      isRead: false,
+      mailboxState: .inbox,
+      bodyPath: nil
+    )
+    let messageID = try await context.store.addMessage(remoteMessage)
+    try await context.store.archive(messageID: messageID)
+
+    try await context.store.applyInboxSync(
+      SyncResult(
+        messages: [remoteMessage],
+        removedRemoteIDs: [],
+        cursor: SyncCursor(uidValidity: 17, highestUID: 203, highestModSequence: nil)
+      ),
+      accountID: context.accountID
+    )
+
+    #expect(try await context.store.fetchInbox().isEmpty)
+    #expect(try await context.store.search("archived").first?.mailboxState == .archive)
+  }
+
+  @Test
+  func inboxSyncPersistsMessagesAndCursorAtomically() async throws {
+    let context = try await makeStore()
+    defer { context.cleanup() }
+
+    let cursor = SyncCursor(uidValidity: 17, highestUID: 204, highestModSequence: "9901")
+    try await context.store.applyInboxSync(
+      SyncResult(
+        messages: [
+          NewMessage(
+            accountID: context.accountID,
+            remoteID: "gmail-message-id",
+            remoteUID: 204,
+            uidValidity: 17,
+            receivedAt: 1_700_000_000,
+            sender: "Gmail Sender",
+            recipients: "me@example.com",
+            cc: "",
+            internetMessageID: "",
+            subject: "Synced metadata",
+            preview: "",
+            isRead: false,
+            mailboxState: .inbox,
+            bodyPath: nil
+          )
+        ],
+        removedRemoteIDs: [],
+        cursor: cursor
+      ),
+      accountID: context.accountID
+    )
+
+    #expect(try await context.store.fetchInbox().map(\.remoteID) == ["gmail-message-id"])
+    #expect(try await context.store.accounts().first?.syncCursor == cursor)
+  }
+
+  @Test
+  func bodyCachePruningKeepsOnlyTheMostRecentFiles() async throws {
+    let context = try await makeStore()
+    defer { context.cleanup() }
+
+    var bodyURLs: [URL] = []
+    for index in 0..<3 {
+      let bodyURL = context.directory.appendingPathComponent("body-\(index).txt")
+      try Data("Body \(index)".utf8).write(to: bodyURL)
+      try FileManager.default.setAttributes(
+        [.modificationDate: Date(timeIntervalSince1970: TimeInterval(index + 1))],
+        ofItemAtPath: bodyURL.path
+      )
+      bodyURLs.append(bodyURL)
+      try await context.store.addMessage(
+        NewMessage(
+          accountID: context.accountID,
+          remoteID: "cached-\(index)",
+          remoteUID: Int64(index + 1),
+          uidValidity: 1,
+          receivedAt: Int64(index + 1),
+          sender: "Sender",
+          recipients: "me@example.com",
+          cc: "",
+          internetMessageID: "",
+          subject: "Cached \(index)",
+          preview: "",
+          isRead: true,
+          mailboxState: .inbox,
+          bodyPath: bodyURL.path
+        ))
+    }
+
+    try await context.store.pruneBodyCache(maximumFiles: 2)
+
+    #expect(!FileManager.default.fileExists(atPath: bodyURLs[0].path))
+    #expect(FileManager.default.fileExists(atPath: bodyURLs[1].path))
+    #expect(FileManager.default.fileExists(atPath: bodyURLs[2].path))
+    #expect(try await context.store.fetchInbox().compactMap(\.bodyPath).count == 2)
+  }
+
+  @Test
+  func deduplicatesRepeatedPendingOperations() async throws {
+    let context = try await makeStore(provider: "gmail")
+    defer { context.cleanup() }
+
+    let messageID = try await context.store.addMessage(
+      NewMessage(
+        accountID: context.accountID,
+        remoteID: "deduplicated-operation",
+        remoteUID: 300,
+        uidValidity: 22,
+        receivedAt: 1_700_000_000,
+        sender: "Sender",
+        recipients: "me@example.com",
+        cc: "",
+        internetMessageID: "",
+        subject: "Queued once",
+        preview: "",
+        isRead: false,
+        mailboxState: .inbox,
+        bodyPath: nil
+      ))
+    try await context.store.markRead(messageID: messageID)
+    try await context.store.markRead(messageID: messageID)
+
+    #expect(try await context.store.pendingOperations(accountID: context.accountID).count == 1)
+  }
+
+  @Test
+  func exposesAndCompletesQueuedGmailOperations() async throws {
+    let context = try await makeStore(provider: "gmail")
+    defer { context.cleanup() }
+
+    let messageID = try await context.store.addMessage(
+      NewMessage(
+        accountID: context.accountID,
+        remoteID: "gmail-operation",
+        remoteUID: 301,
+        uidValidity: 22,
+        receivedAt: 1_700_000_000,
+        sender: "Sender",
+        recipients: "me@example.com",
+        cc: "",
+        internetMessageID: "",
+        subject: "Queued action",
+        preview: "",
+        isRead: false,
+        mailboxState: .inbox,
+        bodyPath: nil
+      ))
+    try await context.store.archive(messageID: messageID)
+
+    let operation = try #require(try await context.store.pendingOperations(
+      accountID: context.accountID
+    ).first)
+    #expect(operation.kind == .archive)
+    #expect(operation.remoteUID == 301)
+    #expect(operation.uidValidity == 22)
+    #expect(!(try await context.store.cacheBody(at: "/tmp/body", messageID: messageID)))
+
+    try await context.store.completePendingOperation(id: operation.id)
+    #expect(try await context.store.pendingOperations(accountID: context.accountID).isEmpty)
+  }
+
+  @Test
+  func ccMigrationRefreshesGmailMetadata() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("FlitMigrationTests-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let path = directory.appendingPathComponent("flit.sqlite3").path
+    do {
+      let legacy = try SQLiteDatabase(path: path)
+      try legacy.execute(
+        """
+        CREATE TABLE accounts (
+          id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE,
+          provider TEXT NOT NULL, uid_validity INTEGER, highest_uid INTEGER,
+          highest_modseq TEXT
+        );
+        CREATE TABLE messages (
+          id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL,
+          remote_id TEXT NOT NULL, remote_uid INTEGER, uid_validity INTEGER,
+          received_at INTEGER NOT NULL, sender TEXT NOT NULL DEFAULT '',
+          recipients TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL DEFAULT '',
+          preview TEXT NOT NULL DEFAULT '', flags INTEGER NOT NULL DEFAULT 0,
+          mailbox_state INTEGER NOT NULL DEFAULT 0, body_path TEXT,
+          UNIQUE(account_id, remote_id)
+        );
+        INSERT INTO accounts
+          (name, email, provider, uid_validity, highest_uid, highest_modseq)
+        VALUES ('Gmail', 'me@example.com', 'gmail', 7, 42, '9');
+        """)
+    }
+
+    let store = try MailStore(path: path)
+    let account = try #require(try await store.accounts(provider: "gmail").first)
+    #expect(account.syncCursor == nil)
+
+    _ = try await store.addMessage(
+      NewMessage(
+        accountID: account.id, remoteID: "gmail-1", remoteUID: 42, uidValidity: 7,
+        receivedAt: 1_700_000_000, sender: "Maya", recipients: "me@example.com",
+        cc: "team@example.com", internetMessageID: "<hello@example.com>",
+        subject: "Hello", preview: "", isRead: false,
+        mailboxState: .inbox, bodyPath: nil
+      ))
+    let migratedMessage = try await store.fetchInbox().first
+    #expect(migratedMessage?.cc == "team@example.com")
+    #expect(migratedMessage?.internetMessageID == "<hello@example.com>")
+  }
+
+  private func makeStore(provider: String = "test") async throws -> TestContext {
     let directory = FileManager.default.temporaryDirectory
       .appendingPathComponent("FlitTests-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -104,7 +372,7 @@ struct MailStoreTests {
     let accountID = try await store.addAccount(
       name: "Test account",
       email: "me@example.com",
-      provider: "test"
+      provider: provider
     )
     return TestContext(store: store, accountID: accountID, directory: directory)
   }

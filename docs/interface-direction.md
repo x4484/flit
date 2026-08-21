@@ -32,7 +32,7 @@ Writer succeeds through restraint:
 Flit should not visually clone Writer or inherit its implementation:
 
 - No GPL source or assets are copied into this MIT repository.
-- No Tauri, React, WebKit, backdrop blur, custom theme engine, or command palette.
+- No Tauri, React, backdrop blur, custom theme engine, or command palette. WebKit is isolated to sender-authored HTML email so messages retain their intended layout.
 - No tabs: message triage benefits from one stable reader context.
 - No persistent body statistics or footer chrome.
 - Use the system accent by default rather than adopting Writer's orange identity.

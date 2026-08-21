@@ -5,6 +5,7 @@ final class LoopbackOAuthReceiver: @unchecked Sendable {
   private let queue = DispatchQueue(label: "com.ranihaddad.flit.oauth-loopback")
   private var listener: NWListener?
   private var continuation: CheckedContinuation<URL, Error>?
+  private var callbackBaseURL: URL?
   private var completed = false
 
   func receiveRedirect(onReady: @escaping @Sendable (URL) -> Void) async throws -> URL {
@@ -26,6 +27,7 @@ final class LoopbackOAuthReceiver: @unchecked Sendable {
                 }
                 let redirectURL = URL(
                   string: "http://127.0.0.1:\(port.rawValue)/oauth2/callback")!
+                self.callbackBaseURL = redirectURL
                 onReady(redirectURL)
               case .failed(let error):
                 self.finish(.failure(error))
@@ -68,7 +70,8 @@ final class LoopbackOAuthReceiver: @unchecked Sendable {
           return
         }
         guard let data, let request = String(data: data, encoding: .utf8),
-          let redirectURL = Self.redirectURL(from: request)
+          let callbackBaseURL = self.callbackBaseURL,
+          let redirectURL = Self.redirectURL(from: request, relativeTo: callbackBaseURL)
         else {
           self.respond(
             to: connection, status: "400 Bad Request", message: "Unable to complete sign-in.")
@@ -79,7 +82,7 @@ final class LoopbackOAuthReceiver: @unchecked Sendable {
         self.respond(
           to: connection,
           status: "200 OK",
-          message: "Flit is connected. You can close this window."
+          message: "Authorization received. Return to Flit to finish connecting."
         )
         self.finish(.success(redirectURL))
       }
@@ -112,16 +115,23 @@ final class LoopbackOAuthReceiver: @unchecked Sendable {
     completed = true
     listener?.cancel()
     listener = nil
+    callbackBaseURL = nil
     let continuation = continuation
     self.continuation = nil
     continuation?.resume(with: result)
   }
 
-  private static func redirectURL(from request: String) -> URL? {
+  static func redirectURL(from request: String, relativeTo callbackBaseURL: URL) -> URL? {
     guard let requestLine = request.components(separatedBy: "\r\n").first else { return nil }
     let parts = requestLine.split(separator: " ")
-    guard parts.count >= 2, parts[0] == "GET" else { return nil }
-    return URL(string: "http://127.0.0.1\(parts[1])")
+    guard parts.count >= 2, parts[0] == "GET",
+      let redirectURL = URL(string: String(parts[1]), relativeTo: callbackBaseURL)?.absoluteURL,
+      redirectURL.scheme == callbackBaseURL.scheme,
+      redirectURL.host == callbackBaseURL.host,
+      redirectURL.port == callbackBaseURL.port,
+      redirectURL.path == callbackBaseURL.path
+    else { return nil }
+    return redirectURL
   }
 }
 

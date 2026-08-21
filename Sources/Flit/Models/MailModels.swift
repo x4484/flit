@@ -6,7 +6,7 @@ enum MailboxState: Int32, Sendable {
   case trash = 2
 }
 
-enum PendingOperationKind: Int32, Sendable {
+enum PendingOperationKind: Int32, Sendable, Equatable {
   case archive = 0
   case trash = 1
   case markRead = 2
@@ -18,19 +18,30 @@ struct PageCursor: Sendable, Equatable {
   let id: Int64
 }
 
+struct MailAccount: Sendable, Equatable, Identifiable {
+  let id: Int64
+  let name: String
+  let email: String
+  let provider: String
+  let syncCursor: SyncCursor?
+}
+
 struct MessageSummary: Sendable, Equatable, Identifiable {
   let id: Int64
   let accountID: Int64
   let accountName: String
   let accountEmail: String
+  let accountProvider: String
   let remoteID: String
   let remoteUID: Int64?
   let receivedAt: Int64
   let sender: String
   let recipients: String
+  let cc: String
+  let internetMessageID: String
   let subject: String
   let preview: String
-  let isRead: Bool
+  var isRead: Bool
   let mailboxState: MailboxState
   let bodyPath: String?
 
@@ -43,7 +54,19 @@ struct MessageSummary: Sendable, Equatable, Identifiable {
   }
 }
 
-struct NewMessage: Sendable {
+struct PendingMailOperation: Sendable, Equatable, Identifiable {
+  let id: Int64
+  let messageID: Int64
+  let accountID: Int64
+  let accountEmail: String
+  let remoteID: String
+  let remoteUID: Int64
+  let uidValidity: Int64?
+  let kind: PendingOperationKind
+  let attempts: Int
+}
+
+struct NewMessage: Sendable, Equatable {
   let accountID: Int64
   let remoteID: String
   let remoteUID: Int64?
@@ -51,6 +74,8 @@ struct NewMessage: Sendable {
   let receivedAt: Int64
   let sender: String
   let recipients: String
+  let cc: String
+  let internetMessageID: String
   let subject: String
   let preview: String
   let isRead: Bool

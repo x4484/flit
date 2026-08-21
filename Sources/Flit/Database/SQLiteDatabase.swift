@@ -70,6 +70,10 @@ final class SQLiteDatabase {
     sqlite3_last_insert_rowid(handle)
   }
 
+  var changedRowCount: Int {
+    Int(sqlite3_changes(handle))
+  }
+
   fileprivate var lastError: String {
     String(cString: sqlite3_errmsg(handle))
   }
@@ -140,6 +144,14 @@ final class SQLiteStatement {
     case SQLITE_ROW: return true
     case SQLITE_DONE: return false
     default: throw DatabaseError.step(database.lastError)
+    }
+  }
+
+  func reset() throws {
+    guard sqlite3_reset(statement) == SQLITE_OK,
+      sqlite3_clear_bindings(statement) == SQLITE_OK
+    else {
+      throw DatabaseError.step(database.lastError)
     }
   }
 

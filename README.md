@@ -2,11 +2,11 @@
 
 Flit is an experimental, extremely lightweight native macOS mail client focused on one job: triaging mail quickly across accounts.
 
-> **Status:** early scaffold. The local-first AppKit interface, SQLite store, archive queue, and local header search are working. Gmail and iCloud transport are not implemented yet.
+> **Status:** pre-alpha. The local-first AppKit interface, SQLite store, local header search, Gmail OAuth, bounded Gmail inbox sync, body-on-open loading, full-fidelity HTML rendering, cached OpenRouter summaries, optimistic remote actions, and Gmail reply/forward sending are working. iCloud remains under development.
 
 ## Principles
 
-- Native AppKit, not Electron or a web view
+- Native AppKit shell, with an isolated WebKit view only for sender-authored HTML email
 - Show the local inbox before touching the network
 - Keep memory proportional to the visible viewport
 - Download message bodies only when opened
@@ -37,7 +37,7 @@ Requirements:
 swift run Flit
 ```
 
-The initial build opens an empty inbox. Use **Accounts → Add Gmail Account…** after completing the [local Google OAuth setup](docs/google-oauth-setup.md). Gmail synchronization is not implemented yet.
+The initial build opens the local inbox immediately. Use **Accounts → Add Gmail Account…** after completing the [local Google OAuth setup](docs/google-oauth-setup.md). Flit then authenticates with XOAUTH2 and synchronizes Gmail inbox headers in bounded batches.
 
 To populate local demo data:
 
@@ -69,9 +69,18 @@ MailStore actor ── SQLite WAL + FTS5
    ├── pending operation queue
    └── bounded body-file cache
 
+GmailSyncService
+   ├── TLS IMAP + XOAUTH2 metadata sync
+   ├── bounded initial and incremental UID batches
+   ├── 1 MiB body-on-open fetch + eight-file body cache
+   ├── queued read, archive, and trash replication
+   └── TLS SMTP + XOAUTH2 reply, reply-all, and forward
+
+OpenRouterSummaryService
+   └── one-sentence Ling 3.0 Flash summaries cached in SQLite
+
 SyncCoordinator
-   ├── Gmail IMAP/XOAUTH2 + SMTP (planned)
-   └── iCloud IMAP + SMTP (planned)
+   └── cross-account connection budget
 ```
 
 The unified inbox is a keyset-paginated SQLite query. Archive and trash remove a row immediately, then persist a pending remote operation. Search covers inbox and archived headers through FTS5. Cached body files are deleted when a message leaves the inbox.
@@ -84,16 +93,19 @@ See [the interface direction](docs/interface-direction.md) for the native design
 - [x] SQLite metadata store and FTS5 header search
 - [x] Optimistic archive/trash queue
 - [x] Bounded, paginated inbox reads
-- [ ] Gmail OAuth/XOAUTH2 account setup
-- [ ] Streaming IMAP transport and incremental sync
+- [x] Gmail OAuth/XOAUTH2 account setup
+- [x] Streaming IMAP transport and bounded incremental UID sync
+- [x] Replicate queued Gmail archive, trash, and read operations
+- [x] Plain-text MIME body selection and bounded cache
+- [x] Gmail SMTP reply, reply-all, and forward
+- [x] Cached one-sentence OpenRouter summaries
 - [ ] iCloud app-specific-password setup
-- [ ] Plain-text MIME body selection and bounded cache
-- [ ] SMTP outbox
+- [ ] Offline SMTP outbox and retry queue
 - [ ] Release-build performance harness with a million-message fixture
 
 ## Non-goals
 
-Flit does not plan to support calendars, contacts, rules, rich-text composition, remote images, plugins, or an embedded browser-based mail renderer.
+Flit does not plan to support calendars, contacts, rules, rich-text composition, plugins, or general-purpose browsing inside the app.
 
 ## License
 

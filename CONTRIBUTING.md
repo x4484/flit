@@ -15,6 +15,6 @@ For performance-sensitive work, profile a release build and include the before/a
 
 - No synchronous network, database, MIME, or file work on the main actor
 - No collection proportional to total mailbox size in application memory
-- No automatic attachment or remote-image download
-- No WebKit dependency in the default reading path
+- No automatic attachment download
+- Keep WebKit isolated to sender-authored HTML email, with active content disabled
 - No full table reload for a single-message mutation

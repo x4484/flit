@@ -1,52 +1,56 @@
 import AppKit
 
+private final class UnreadIndicatorView: NSView {
+  var isUnread = false {
+    didSet { needsDisplay = true }
+  }
+
+  override func draw(_ dirtyRect: NSRect) {
+    guard isUnread else { return }
+    NSColor.controlAccentColor.setFill()
+    NSBezierPath(ovalIn: bounds).fill()
+  }
+}
+
 final class MessageCellView: NSTableCellView {
   static let identifier = NSUserInterfaceItemIdentifier("MessageCell")
 
+  private let unreadIndicator = UnreadIndicatorView()
   private let senderLabel = NSTextField(labelWithString: "")
-  private let subjectLabel = NSTextField(labelWithString: "")
-  private let accountLabel = NSTextField(labelWithString: "")
-  private let dateLabel = NSTextField(labelWithString: "")
+  private let metadataLabel = NSTextField(labelWithString: "")
 
   override init(frame frameRect: NSRect) {
     super.init(frame: frameRect)
     identifier = Self.identifier
 
     senderLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+    senderLabel.alignment = .left
     senderLabel.lineBreakMode = .byTruncatingTail
     senderLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-    subjectLabel.font = .systemFont(ofSize: 12, weight: .regular)
-    subjectLabel.textColor = .secondaryLabelColor
-    subjectLabel.lineBreakMode = .byTruncatingTail
-    subjectLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    metadataLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+    metadataLabel.textColor = .tertiaryLabelColor
+    metadataLabel.alignment = .left
+    metadataLabel.lineBreakMode = .byTruncatingTail
+    metadataLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-    accountLabel.font = .systemFont(ofSize: 11, weight: .medium)
-    accountLabel.textColor = .tertiaryLabelColor
-    accountLabel.lineBreakMode = .byTruncatingTail
+    unreadIndicator.translatesAutoresizingMaskIntoConstraints = false
+    unreadIndicator.setAccessibilityElement(false)
 
-    dateLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-    dateLabel.textColor = .tertiaryLabelColor
-    dateLabel.alignment = .right
-
-    let topRow = NSStackView(views: [senderLabel, dateLabel])
-    topRow.orientation = .horizontal
-    topRow.spacing = 8
-    topRow.distribution = .fill
-
-    let bottomRow = NSStackView(views: [subjectLabel, accountLabel])
-    bottomRow.orientation = .horizontal
-    bottomRow.spacing = 8
-    bottomRow.distribution = .fill
-
-    let stack = NSStackView(views: [topRow, bottomRow])
+    let stack = NSStackView(views: [senderLabel, metadataLabel])
     stack.orientation = .vertical
+    stack.alignment = .leading
     stack.spacing = 4
     stack.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(unreadIndicator)
     addSubview(stack)
 
     NSLayoutConstraint.activate([
-      stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+      unreadIndicator.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+      unreadIndicator.centerYAnchor.constraint(equalTo: senderLabel.centerYAnchor),
+      unreadIndicator.widthAnchor.constraint(equalToConstant: 6),
+      unreadIndicator.heightAnchor.constraint(equalToConstant: 6),
+      stack.leadingAnchor.constraint(equalTo: unreadIndicator.trailingAnchor, constant: 8),
       stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
       stack.centerYAnchor.constraint(equalTo: centerYAnchor),
     ])
@@ -58,15 +62,23 @@ final class MessageCellView: NSTableCellView {
   }
 
   func configure(with message: MessageSummary, dateText: String) {
+    let accountName = Self.accountName(for: message)
+    unreadIndicator.isUnread = !message.isRead
     senderLabel.stringValue = message.sender
     senderLabel.font = .systemFont(ofSize: 13, weight: message.isRead ? .regular : .semibold)
-    subjectLabel.stringValue = message.subject.isEmpty ? "(No subject)" : message.subject
-    accountLabel.stringValue = message.accountName
-    dateLabel.stringValue = dateText
+    metadataLabel.stringValue = "\(accountName) | \(dateText)"
 
     senderLabel.toolTip = message.sender
-    subjectLabel.toolTip = message.subject
-    setAccessibilityLabel(
-      "\(message.sender), \(message.subject), \(dateText), \(message.accountName)")
+    metadataLabel.toolTip = "\(accountName) | \(dateText)"
+    let readState = message.isRead ? "Read" : "Unread"
+    setAccessibilityLabel("\(readState), \(message.sender), \(accountName), \(dateText)")
+  }
+
+  private static func accountName(for message: MessageSummary) -> String {
+    guard let atSign = message.accountEmail.lastIndex(of: "@") else {
+      return message.accountName
+    }
+    let domain = message.accountEmail[message.accountEmail.index(after: atSign)...]
+    return domain.isEmpty ? message.accountName : domain.lowercased()
   }
 }
