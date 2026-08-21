@@ -13,6 +13,11 @@ actor MailStore {
     database = try SQLiteDatabase(path: path)
     try Self.migrate(database)
     try Self.removeLegacyBodyCache(database)
+    if parentDirectory.lastPathComponent == "Flit" {
+      try? FileManager.default.removeItem(
+        at: parentDirectory.appendingPathComponent("TransientBodies", isDirectory: true)
+      )
+    }
   }
 
   func addAccount(name: String, email: String, provider: String) throws -> Int64 {

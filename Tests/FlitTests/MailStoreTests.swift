@@ -42,6 +42,22 @@ struct MailStoreTests {
   }
 
   @Test
+  func startupRemovesTransientArchivedBodies() throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("FlitTransientTests-\(UUID().uuidString)", isDirectory: true)
+    let support = root.appendingPathComponent("Flit", isDirectory: true)
+    let transient = support.appendingPathComponent("TransientBodies/1", isDirectory: true)
+    try FileManager.default.createDirectory(at: transient, withIntermediateDirectories: true)
+    let staleBody = transient.appendingPathComponent("stale.html")
+    try Data("stale".utf8).write(to: staleBody)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    _ = try MailStore(path: support.appendingPathComponent("flit.sqlite3").path)
+
+    #expect(!FileManager.default.fileExists(atPath: staleBody.path))
+  }
+
+  @Test
   func archiveDeletesCachedBody() async throws {
     let context = try await makeStore()
     defer { context.cleanup() }

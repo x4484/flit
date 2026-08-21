@@ -10,7 +10,7 @@ Flit is an experimental, extremely lightweight native macOS mail client focused 
 - Show the local inbox before touching the network
 - Keep memory proportional to the visible viewport
 - Download message bodies only when opened
-- Delete cached bodies after archive; retain compact searchable headers
+- Delete persistent cached bodies after archive; treat searched archived bodies as selection-scoped temporary files
 - Apply archive, trash, and read actions optimistically
 - Keep the main thread free of SQL, MIME, file, and network work
 
@@ -72,7 +72,7 @@ MailStore actor ── SQLite WAL + FTS5
 GmailSyncService
    ├── TLS IMAP + XOAUTH2 metadata sync
    ├── bounded initial and incremental UID batches
-   ├── 1 MiB body-on-open fetch + eight-file body cache
+   ├── 1 MiB body-on-open fetch + eight-file inbox cache + transient archive reads
    ├── queued read, archive, and trash replication
    └── TLS SMTP + XOAUTH2 reply, reply-all, and forward
 

@@ -112,17 +112,20 @@ actor GmailSyncService {
     }
     let url = try await provider.fetchPlainTextBody(
       remoteID: message.remoteID,
-      remoteUID: remoteUID
+      remoteUID: remoteUID,
+      mailboxState: message.mailboxState
     )
     guard !Task.isCancelled else {
       try? FileManager.default.removeItem(at: url)
       throw CancellationError()
     }
-    guard try await store.cacheBody(at: url.path, messageID: message.id) else {
-      try? FileManager.default.removeItem(at: url)
-      throw CancellationError()
+    if message.mailboxState == .inbox {
+      guard try await store.cacheBody(at: url.path, messageID: message.id) else {
+        try? FileManager.default.removeItem(at: url)
+        throw CancellationError()
+      }
+      try await store.pruneBodyCache(maximumFiles: 8)
     }
-    try await store.pruneBodyCache(maximumFiles: 8)
     return url
   }
 

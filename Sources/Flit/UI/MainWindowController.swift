@@ -17,6 +17,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
   private var composeWindowController: ComposeWindowController?
   private var settingsWindowController: SettingsWindowController?
   private var cachedBodyURLs: [Int64: URL] = [:]
+  private var transientBodyURLs: [Int64: URL] = [:]
   private var suppressNextReadMark = false
   private var currentQuery = ""
   private var inboxCount = 0
@@ -200,6 +201,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     let selectedRow = tableView.selectedRow
     guard messages.indices.contains(selectedRow) else { return false }
+    if action == #selector(archiveSelected) || action == #selector(trashSelected) {
+      guard messages[selectedRow].mailboxState == .inbox else { return false }
+    }
     if action == #selector(trashSelected),
       let textView = window?.firstResponder as? NSTextView,
       textView.isEditable
@@ -777,6 +781,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
         guard let self else { return }
         self.cachedBodyURLs.removeValue(forKey: message.id)
+        if let transientURL = self.transientBodyURLs.removeValue(forKey: message.id) {
+          try? FileManager.default.removeItem(at: transientURL)
+        }
         _ = try? await self.gmailSyncService.flushPendingOperations()
       } catch {
         guard let self else { return }
@@ -792,7 +799,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
   private func markSelectedReadIfNeeded() {
     let selectedRow = tableView.selectedRow
-    guard messages.indices.contains(selectedRow), !messages[selectedRow].isRead else { return }
+    guard messages.indices.contains(selectedRow),
+      messages[selectedRow].mailboxState == .inbox,
+      !messages[selectedRow].isRead
+    else { return }
     let messageID = messages[selectedRow].id
     messages[selectedRow].isRead = true
     tableView.reloadData(
@@ -809,6 +819,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     bodyLoadTask?.cancel()
     summaryTask?.cancel()
     let selectedRow = tableView.selectedRow
+    let selectedID = messages.indices.contains(selectedRow) ? messages[selectedRow].id : nil
+    cleanupTransientBodyCache(keeping: selectedID)
     guard messages.indices.contains(selectedRow) else {
       fromLabel.stringValue = ""
       toLabel.stringValue = ""
@@ -840,13 +852,13 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     if let cachedURL = cachedBodyURLs[message.id] ?? message.bodyPath.map({ URL(fileURLWithPath: $0) }) {
       setBodyText("Loading message…")
       loadBodyText(from: cachedURL, for: message.id)
-    } else if message.accountProvider == "gmail" && message.mailboxState == .inbox {
+    } else if message.accountProvider == "gmail" && message.mailboxState != .trash {
       setBodyText("Loading message…")
       fetchBody(for: message)
     } else {
       let body = message.preview.isEmpty ? "Message body isn’t available." : message.preview
       setBodyText(body)
-      if !message.preview.isEmpty {
+      if message.mailboxState == .inbox, !message.preview.isEmpty {
         startSummary(for: message, readableBody: message.preview)
       }
     }
@@ -854,8 +866,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     replyButton.isEnabled = canSend
     replyAllButton.isEnabled = canSend
     forwardButton.isEnabled = canSend
-    archiveButton.isEnabled = true
-    trashButton.isEnabled = true
+    archiveButton.isEnabled = message.mailboxState == .inbox
+    trashButton.isEnabled = message.mailboxState == .inbox
   }
 
   private func presentComposer(_ mode: ComposeMode) {
@@ -944,12 +956,25 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     label.setAccessibilityLabel(value.isEmpty ? "\(title): none" : "\(title): \(value)")
   }
 
+  private func cleanupTransientBodyCache(keeping messageID: Int64?) {
+    let staleMessageIDs = transientBodyURLs.keys.filter { $0 != messageID }
+    for staleMessageID in staleMessageIDs {
+      if let url = transientBodyURLs.removeValue(forKey: staleMessageID) {
+        try? FileManager.default.removeItem(at: url)
+      }
+      cachedBodyURLs.removeValue(forKey: staleMessageID)
+    }
+  }
+
   private func fetchBody(for message: MessageSummary) {
     bodyLoadTask = Task { [weak self, gmailSyncService] in
       do {
         let url = try await gmailSyncService.fetchBody(for: message)
         guard !Task.isCancelled, let self else { return }
         self.cachedBodyURLs[message.id] = url
+        if message.mailboxState != .inbox {
+          self.transientBodyURLs[message.id] = url
+        }
         self.loadBodyText(from: url, for: message.id)
       } catch is CancellationError {
         return
@@ -980,6 +1005,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
           self.setBodyText(text.isEmpty ? "This message has no readable text." : text)
         }
         if let message = self.messages.first(where: { $0.id == messageID }),
+          message.mailboxState == .inbox,
           !readableBody.isEmpty
         {
           self.startSummary(for: message, readableBody: readableBody)
@@ -992,6 +1018,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
   }
 
   private func loadCachedSummary(for message: MessageSummary) {
+    guard message.mailboxState == .inbox else {
+      setSummaryText("Summaries are available for Inbox messages.")
+      return
+    }
     setSummaryText("Loading summary…")
     summaryTask = Task { [weak self, store] in
       do {

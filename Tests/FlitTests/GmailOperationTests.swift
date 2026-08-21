@@ -4,6 +4,13 @@ import Testing
 
 struct GmailOperationTests {
   @Test
+  func selectsTheCorrectMailboxForBodyDownloads() {
+    #expect(GmailIMAPProvider.mailboxName(for: .inbox) == "INBOX")
+    #expect(GmailIMAPProvider.mailboxName(for: .archive) == "[Gmail]/All Mail")
+    #expect(GmailIMAPProvider.mailboxName(for: .trash) == "[Gmail]/Trash")
+  }
+
+  @Test
   func archiveMovesTheMessageOutOfInboxAndIntoAllMail() {
     #expect(
       GmailIMAPProvider.mailboxMoveCommand(kind: .archive, remoteUID: 76)

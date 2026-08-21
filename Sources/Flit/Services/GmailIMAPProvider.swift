@@ -324,6 +324,7 @@ actor GmailIMAPProvider: MailProvider {
       let url = try await fetchPlainTextBody(
         remoteID: remoteID,
         remoteUID: uid,
+        mailboxState: .inbox,
         transport: transport
       )
       return url
@@ -333,7 +334,11 @@ actor GmailIMAPProvider: MailProvider {
     }
   }
 
-  func fetchPlainTextBody(remoteID: String, remoteUID: Int64) async throws -> URL {
+  func fetchPlainTextBody(
+    remoteID: String,
+    remoteUID: Int64,
+    mailboxState: MailboxState = .inbox
+  ) async throws -> URL {
     await acquireSession()
     defer { releaseSession() }
     try Task.checkCancellation()
@@ -342,10 +347,11 @@ actor GmailIMAPProvider: MailProvider {
     }
     let transport = try await authenticatedTransport()
     do {
-      _ = try await transport.execute("EXAMINE \"INBOX\"")
+      _ = try await transport.execute("EXAMINE \"\(Self.mailboxName(for: mailboxState))\"")
       let url = try await fetchPlainTextBody(
         remoteID: remoteID,
         remoteUID: remoteUID,
+        mailboxState: mailboxState,
         transport: transport
       )
       return url
@@ -441,9 +447,18 @@ actor GmailIMAPProvider: MailProvider {
     }
   }
 
+  static func mailboxName(for state: MailboxState) -> String {
+    switch state {
+    case .inbox: return "INBOX"
+    case .archive: return "[Gmail]/All Mail"
+    case .trash: return "[Gmail]/Trash"
+    }
+  }
+
   private func fetchPlainTextBody(
     remoteID: String,
     remoteUID: Int64,
+    mailboxState: MailboxState,
     transport: IMAPTransport
   ) async throws -> URL {
     let result = try await transport.execute(
@@ -461,7 +476,11 @@ actor GmailIMAPProvider: MailProvider {
     let headerData = Data(messageData[..<separator.lowerBound])
     let bodyData = Data(messageData[separator.upperBound...])
     let body = MIMETextExtractor.preferredBody(headerData: headerData, bodyData: bodyData)
-    return try cacheBody(body, remoteID: remoteID)
+    return try cacheBody(
+      body,
+      remoteID: remoteID,
+      transient: mailboxState != .inbox
+    )
   }
 
   private func acquireSession() async {
@@ -512,7 +531,11 @@ actor GmailIMAPProvider: MailProvider {
     transport.close()
   }
 
-  private func cacheBody(_ body: PreferredMIMEBody, remoteID: String) throws -> URL {
+  private func cacheBody(
+    _ body: PreferredMIMEBody,
+    remoteID: String,
+    transient: Bool
+  ) throws -> URL {
     let safeRemoteID = remoteID.map { character in
       character.isLetter || character.isNumber ? character : "_"
     }
@@ -520,7 +543,10 @@ actor GmailIMAPProvider: MailProvider {
       for: .applicationSupportDirectory,
       in: .userDomainMask
     ).first!
-      .appendingPathComponent("Flit/Bodies-v4/\(accountID)", isDirectory: true)
+      .appendingPathComponent(
+        transient ? "Flit/TransientBodies/\(accountID)" : "Flit/Bodies-v4/\(accountID)",
+        isDirectory: true
+      )
     try FileManager.default.createDirectory(
       at: directory,
       withIntermediateDirectories: true
