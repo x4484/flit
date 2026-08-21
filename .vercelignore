@@ -1,0 +1,15 @@
+/.build/
+/.swiftpm/
+/.vercel/
+/dist/
+/Sources/
+/Tests/
+/Support/
+/assets/
+/docs/
+/site-src/
+/scripts/
+/.github/
+/*.md
+/Makefile
+/Package.swift

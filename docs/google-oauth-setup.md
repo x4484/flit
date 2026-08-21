@@ -36,4 +36,8 @@ You can start from `Support/GoogleOAuth.example.json`, but using Google's downlo
 
 ## Public distribution
 
-The IMAP/SMTP scope is restricted. A public release that connects arbitrary Google accounts will require Google's OAuth verification and may require an independent security assessment. Development with explicitly listed test users does not require completing that release process first.
+The IMAP/SMTP scope is restricted. A public release that connects arbitrary Google accounts requires Google's OAuth verification and may require an independent security assessment. Development with explicitly listed test users does not require completing that release process first.
+
+The public consent screen must use the final verified custom domain for Flit's homepage, [privacy policy](privacy.md), [terms](terms.md), and [support](support.md). The temporary website preview is `https://flit-pied.vercel.app/`; replace it with the purchased Vercel domain before submitting production verification.
+
+The approved Desktop OAuth JSON must never be committed. Public release builds inject it from the protected `GOOGLE_OAUTH_JSON_BASE64` GitHub Actions secret. See the [public release checklist](release-checklist.md).

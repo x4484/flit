@@ -1,8 +1,16 @@
-# Flit
+<p align="center">
+  <img src="assets/FLIT-logo.png" alt="Flit" width="420">
+</p>
+
+<p align="center">
+  <a href="https://flit-pied.vercel.app/">Website</a> ·
+  <a href="https://github.com/x4484/flit/releases">Downloads</a> ·
+  <a href="https://flit-pied.vercel.app/privacy/">Privacy</a>
+</p>
 
 Flit is an experimental, extremely lightweight native macOS mail client focused on one job: triaging mail quickly across accounts.
 
-> **Status:** pre-alpha. The local-first AppKit interface, SQLite store, local header search, Gmail OAuth, bounded periodic Gmail metadata sync, lazy Gmail thread navigation, body-on-open loading, full-fidelity HTML rendering, cached OpenRouter summaries, optimistic remote actions, and Gmail reply/forward sending are working. iCloud remains under development.
+> **Status:** public beta candidate. Signed downloads are awaiting Apple Developer ID/notarization credentials and Google OAuth production approval. Do not publish the unsigned validation package. The local-first AppKit interface, SQLite store, local header search, Gmail OAuth, bounded periodic Gmail metadata sync, lazy Gmail thread navigation, body-on-open loading, full-fidelity HTML rendering, cached OpenRouter summaries, optimistic remote actions, and Gmail reply/forward sending are working. iCloud remains under development.
 
 ## Principles
 
@@ -26,7 +34,13 @@ Flit is an experimental, extremely lightweight native macOS mail client focused 
 
 These are targets, not yet published benchmark results.
 
-## Run
+## Install
+
+Signed and notarized universal downloads will appear on [GitHub Releases](https://github.com/x4484/flit/releases) after the public OAuth consent screen is approved. Flit requires macOS 13 or newer and supports Apple silicon and Intel Macs.
+
+See the [installation guide](https://flit-pied.vercel.app/installation/) for release installation and data-removal instructions.
+
+## Build from source
 
 Requirements:
 
@@ -51,6 +65,14 @@ Build an ad-hoc signed app bundle:
 make app
 open dist/Flit.app
 ```
+
+Build a universal Apple silicon + Intel app:
+
+```bash
+make app-universal
+```
+
+Public release packaging is defined in `scripts/package-release.sh` and `.github/workflows/release.yml`. It refuses to create a publishable package without the approved OAuth configuration, a Developer ID Application identity, and notarization credentials. See the [release checklist](docs/release-checklist.md).
 
 Run tests:
 

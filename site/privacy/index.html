@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Flit is a fast, local-first native mail client for macOS.">
+  <meta name="theme-color" content="#07101f">
+  
+  <title>Privacy Policy · Flit</title>
+  <link rel="icon" href="/assets/icon.png" type="image/png">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to content</a>
+  <header class="site-header">
+    <a class="brand" href="/" aria-label="Flit home"><img src="/assets/logo.png" alt="Flit"></a>
+    <nav aria-label="Primary navigation">
+      <a href="/installation/">Installation</a>
+      <a href="/privacy/">Privacy</a>
+      <a href="/support/">Support</a>
+      <a class="github-link" href="https://github.com/x4484/flit">GitHub</a>
+    </nav>
+  </header>
+  <main id="content" class="content">
+    <p><strong>Effective date: August 21, 2026</strong></p>
+<p>Flit is an open-source, local-first macOS mail client. This policy explains how the Flit application handles information when you connect Gmail or enable optional AI summaries.</p>
+<h2>Information Flit accesses</h2>
+<p>With your permission, Flit uses Google's OAuth service and the <code>https://mail.google.com/</code> scope to access the Gmail features needed to synchronize message metadata, open messages, search mail, change read state, archive or trash messages, and send replies or forwarded messages.</p>
+<p>Flit does not ask for your Google password. Google sign-in happens in your browser. Gmail refresh tokens are stored in macOS Keychain, and short-lived access tokens are held in memory.</p>
+<h2>Local storage</h2>
+<p>Flit stores the following on your Mac:</p>
+<ul>
+<li>Account address and compact message metadata in SQLite</li>
+<li>Searchable sender, recipient, subject, and locally generated preview text</li>
+<li>A bounded cache of message bodies that you open</li>
+<li>Optional one-sentence AI summaries</li>
+<li>Pending mailbox operations needed for retry</li>
+</ul>
+<p>Persistent body cache files are removed when a message is archived or trashed. Bodies opened from archived search results are temporary and are removed when selection changes or at the next launch. Local data is not uploaded to a Flit-operated server because Flit does not operate a mail-storage or analytics backend.</p>
+<h2>Network services</h2>
+<p>Flit communicates with:</p>
+<ul>
+<li><strong>Google Gmail and OAuth:</strong> authentication, IMAP synchronization, search, mailbox changes, and SMTP sending</li>
+<li><strong>OpenRouter, only when you enable AI summaries:</strong> sender, subject, and up to 24,000 readable body characters are sent using your own OpenRouter API key to generate one sentence</li>
+<li><strong>Email senders' resource hosts:</strong> remote images, fonts, and styles load by default for message fidelity; those requests can reveal your IP address and that the message was opened</li>
+<li><strong>Links you activate:</strong> links open in your default external application</li>
+</ul>
+<p>Flit does not sell personal information, use Gmail data for advertising, or allow humans to read Gmail data except when required to investigate a user-initiated security report and only with information the user deliberately provides. Flit's use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including its Limited Use requirements, and is limited to providing and improving the user-facing mail features described here.</p>
+<h2>AI summaries</h2>
+<p>AI summaries are optional. Your OpenRouter key is stored in macOS Keychain. Flit sends only the selected message's sender, subject, and bounded readable body text. The resulting sentence is cached locally and removed when the message is archived or trashed. OpenRouter's own terms and privacy policy apply to that processing.</p>
+<h2>Analytics and diagnostics</h2>
+<p>Flit does not include advertising SDKs, behavioral analytics, or crash-reporting services. macOS may create local diagnostic reports according to your system settings.</p>
+<h2>Retention and deletion</h2>
+<p>Gmail data remains local until you remove it, archive or trash messages under the cache rules above, or uninstall Flit and delete its application-support directory. Instructions for revoking access and deleting all local Flit data are available on the <a href="../installation/">installation page</a>.</p>
+<h2>Security</h2>
+<p>Flit uses TLS for Gmail IMAP, Gmail SMTP, Google OAuth, and OpenRouter. HTML messages run in an isolated, non-persistent WebKit view with JavaScript, forms, frames, downloads, popups, and automatic navigation disabled. See the project's <a href="https://github.com/x4484/flit/blob/main/SECURITY/">security policy</a> for reporting instructions.</p>
+<h2>Changes</h2>
+<p>Material changes will update this page and its effective date. The repository history preserves prior versions.</p>
+<h2>Contact</h2>
+<p>For privacy questions, use <a href="https://github.com/x4484/flit/issues">GitHub Discussions or Issues</a>. For vulnerabilities or sensitive reports, use <a href="https://github.com/x4484/flit/security/advisories/new">GitHub private security advisories</a> and do not include email content or credentials unless explicitly requested.</p>
+  </main>
+  <footer>
+    <span>Native, local-first email for macOS.</span>
+    <span><a href="/terms/">Terms</a> · <a href="https://github.com/x4484/flit/blob/main/LICENSE">MIT License</a></span>
+  </footer>
+</body>
+</html>

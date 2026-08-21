@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Flit is a fast, local-first native mail client for macOS.">
+  <meta name="theme-color" content="#07101f">
+  
+  <title>Installation · Flit</title>
+  <link rel="icon" href="/assets/icon.png" type="image/png">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to content</a>
+  <header class="site-header">
+    <a class="brand" href="/" aria-label="Flit home"><img src="/assets/logo.png" alt="Flit"></a>
+    <nav aria-label="Primary navigation">
+      <a href="/installation/">Installation</a>
+      <a href="/privacy/">Privacy</a>
+      <a href="/support/">Support</a>
+      <a class="github-link" href="https://github.com/x4484/flit">GitHub</a>
+    </nav>
+  </header>
+  <main id="content" class="content">
+    <h2>Requirements</h2>
+<ul>
+<li>macOS 13 Ventura or newer</li>
+<li>Apple silicon or Intel Mac</li>
+<li>A Gmail account</li>
+</ul>
+<h2>Install Flit</h2>
+<ol>
+<li>Download the latest <code>Flit-*.dmg</code> from <a href="https://github.com/x4484/flit/releases">GitHub Releases</a>.</li>
+<li>Open the disk image.</li>
+<li>Drag <strong>Flit</strong> into <strong>Applications</strong>.</li>
+<li>Open Flit from Applications.</li>
+<li>Choose <strong>Accounts → Add Gmail Account…</strong> and complete Google sign-in in your browser.</li>
+</ol>
+<p>Public builds are signed with a Developer ID certificate and notarized by Apple. You should not need to bypass Gatekeeper. If macOS says that the app cannot be verified, do not override the warning; confirm that you downloaded the DMG from the official GitHub repository and report the problem through <a href="../support/">support</a>.</p>
+<h2>Verify the download</h2>
+<p>Each release includes <code>SHA256SUMS</code>. In Terminal:</p>
+<pre><code class="language-bash">shasum -a 256 -c SHA256SUMS
+</code></pre>
+<p>The line for the downloaded DMG should report <code>OK</code>.</p>
+<h2>Uninstall and delete local data</h2>
+<ol>
+<li>Quit Flit.</li>
+<li>Revoke Flit's access from your <a href="https://myaccount.google.com/connections">Google Account connections</a>.</li>
+<li>Move Flit from Applications to Trash.</li>
+<li>Delete <code>~/Library/Application Support/Flit</code> to remove local headers, summaries, and cached bodies.</li>
+<li>In <strong>Keychain Access</strong>, delete items whose service is <code>com.ranihaddad.flit.oauth</code> or <code>com.ranihaddad.flit.openrouter</code>.</li>
+</ol>
+<p>This removes Flit's local data. It does not delete messages stored by Gmail.</p>
+  </main>
+  <footer>
+    <span>Native, local-first email for macOS.</span>
+    <span><a href="/terms/">Terms</a> · <a href="https://github.com/x4484/flit/blob/main/LICENSE">MIT License</a></span>
+  </footer>
+</body>
+</html>
