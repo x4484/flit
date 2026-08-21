@@ -21,6 +21,8 @@ jobs:
           plutil -lint dist/Flit.app/Contents/Info.plist
       - name: Verify generated website
         run: |
-          python3 -m pip install --requirement site-src/requirements.txt
+          python3 -m venv "$RUNNER_TEMP/flit-site-venv"
+          source "$RUNNER_TEMP/flit-site-venv/bin/activate"
+          python -m pip install --requirement site-src/requirements.txt
           ./scripts/build-site.py
           git diff --exit-code -- site
