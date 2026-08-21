@@ -20,11 +20,11 @@ Flit stores the following on your Mac:
 
 - Account address and compact message metadata in SQLite
 - Searchable sender, recipient, subject, and locally generated preview text
-- A bounded cache of message bodies that you open
+- A bounded cache of up to 16 Inbox message bodies, including a rolling prefetch window of 10 recent messages and recently opened messages
 - Optional one-sentence AI summaries
 - Pending mailbox operations needed for retry
 
-Persistent body cache files are removed when a message is archived or trashed. Bodies opened from archived search results are temporary and are removed when selection changes or at the next launch. Local data is not uploaded to a Flit-operated server because Flit does not operate a mail-storage or analytics backend.
+Inbox body prefetch runs locally at low priority and does not mark messages as read, generate AI summaries, render HTML, or load remote resources. Persistent body cache files are removed when a message is archived or trashed. Bodies opened from archived search results are temporary and are removed when selection changes or at the next launch. Local data is not uploaded to a Flit-operated server because Flit does not operate a mail-storage or analytics backend.
 
 ## Network services
 
@@ -32,7 +32,7 @@ Flit communicates with:
 
 - **Google Gmail and OAuth:** authentication, IMAP synchronization, search, mailbox changes, and SMTP sending
 - **OpenRouter, only when you enable AI summaries:** sender, subject, and up to 24,000 readable body characters are sent using your own OpenRouter API key to generate one sentence
-- **Email senders' resource hosts:** remote images, fonts, and styles load by default for message fidelity; those requests can reveal your IP address and that the message was opened
+- **Email senders' resource hosts:** remote images, fonts, and styles load by default only when a message is selected for viewing; those requests can reveal your IP address and that the message was opened
 - **Links you activate:** links open in your default external application
 
 Flit does not sell personal information, use Gmail data for advertising, or allow humans to read Gmail data except when required to investigate a user-initiated security report and only with information the user deliberately provides. Flit's use and transfer of information received from Google APIs adheres to the [Google API Services User Data Policy](https://developers.google.com/terms/api-services-user-data-policy), including its Limited Use requirements, and is limited to providing and improving the user-facing mail features described here.

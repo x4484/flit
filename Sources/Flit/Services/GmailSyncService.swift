@@ -5,6 +5,8 @@ actor GmailSyncService {
   private var providers: [Int64: GmailIMAPProvider] = [:]
   private var exhaustedOlderAccounts: Set<Int64> = []
   private var completedRemoteSearches: Set<String> = []
+  private var bodyFetchTasks: [Int64: Task<URL, Error>] = [:]
+  private var demandBodyFetchCount = 0
   private var isSyncing = false
 
   init(store: MailStore) {
@@ -35,7 +37,7 @@ actor GmailSyncService {
       _ = try await flushPendingOperations(for: account, provider: provider)
       synchronizedMessageCount += result.messages.count
     }
-    try await store.pruneBodyCache(maximumFiles: 8)
+    try await store.pruneBodyCache(maximumFiles: BodyPrefetchPlanner.maximumCachedBodies)
     return synchronizedMessageCount
   }
 
@@ -122,6 +124,38 @@ actor GmailSyncService {
   }
 
   func fetchBody(for message: MessageSummary) async throws -> URL {
+    demandBodyFetchCount += 1
+    defer { demandBodyFetchCount -= 1 }
+    return try await sharedBodyFetch(for: message)
+  }
+
+  func prefetchBody(for message: MessageSummary) async throws -> URL? {
+    guard message.accountProvider == "gmail", message.mailboxState == .inbox,
+      demandBodyFetchCount == 0
+    else { return nil }
+    return try await sharedBodyFetch(for: message)
+  }
+
+  private func sharedBodyFetch(for message: MessageSummary) async throws -> URL {
+    if let existingTask = bodyFetchTasks[message.id] {
+      return try await existingTask.value
+    }
+
+    let task = Task { [self] in
+      try await performBodyFetch(for: message)
+    }
+    bodyFetchTasks[message.id] = task
+    do {
+      let url = try await task.value
+      bodyFetchTasks.removeValue(forKey: message.id)
+      return url
+    } catch {
+      bodyFetchTasks.removeValue(forKey: message.id)
+      throw error
+    }
+  }
+
+  private func performBodyFetch(for message: MessageSummary) async throws -> URL {
     guard message.accountProvider == "gmail" else {
       throw GmailIMAPProviderError.featureUnavailable
     }
@@ -152,7 +186,9 @@ actor GmailSyncService {
         try? FileManager.default.removeItem(at: url)
         throw CancellationError()
       }
-      try await store.pruneBodyCache(maximumFiles: 8)
+      try await store.pruneBodyCache(
+        maximumFiles: BodyPrefetchPlanner.maximumCachedBodies
+      )
     }
     return url
   }

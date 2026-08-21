@@ -21,11 +21,13 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
   private var sentThreadRefreshTask: Task<Void, Never>?
   private var periodicSyncTask: Task<Void, Never>?
   private var bodyLoadTask: Task<Void, Never>?
+  private var bodyPrefetchTask: Task<Void, Never>?
   private var summaryTask: Task<Void, Never>?
   private var composeWindowController: ComposeWindowController?
   private var settingsWindowController: SettingsWindowController?
   private var cachedBodyURLs: [Int64: URL] = [:]
   private var transientBodyURLs: [Int64: URL] = [:]
+  private var consumedPrefetchMessageIDs: Set<Int64> = []
   private var suppressNextReadMark = false
   private var currentQuery = ""
   private var inboxCount = 0
@@ -131,6 +133,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
   deinit {
     periodicSyncTask?.cancel()
     sentThreadRefreshTask?.cancel()
+    bodyPrefetchTask?.cancel()
   }
 
   override func showWindow(_ sender: Any?) {
@@ -789,6 +792,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         let inboxCount = try await store.inboxCount()
         guard let self, self.currentQuery == query else { return }
         self.messages = loaded
+        if normalizedQuery.isEmpty {
+          self.consumedPrefetchMessageIDs.formIntersection(loaded.map(\.id))
+        }
         self.updateInboxCount(inboxCount)
         self.tableView.reloadData()
         if !loaded.isEmpty {
@@ -813,6 +819,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
           self.renderSelection()
         }
 
+        self.scheduleBodyPrefetch()
         if !normalizedQuery.isEmpty {
           self.searchRemoteInbox(query: normalizedQuery)
         }
@@ -839,6 +846,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     guard currentQuery == query else { return }
 
     messages = loaded
+    if normalizedQuery.isEmpty {
+      consumedPrefetchMessageIDs.formIntersection(loaded.map(\.id))
+    }
+    defer { scheduleBodyPrefetch() }
     updateInboxCount(count)
     isRestoringSidebarSelection = true
     tableView.reloadData()
@@ -953,6 +964,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         self.messages.append(contentsOf: newMessages)
         self.updateInboxCount(try await store.inboxCount())
         self.tableView.reloadData()
+        self.scheduleBodyPrefetch()
       } catch {
         self.hasMoreInboxMessages = true
       }
@@ -1119,6 +1131,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     trashButton.isEnabled = false
     if let sidebarRow {
       messages.remove(at: sidebarRow)
+      consumedPrefetchMessageIDs.remove(message.id)
       tableView.removeRows(at: IndexSet(integer: sidebarRow), withAnimation: [])
       if tableView.selectedRow == -1, !messages.isEmpty {
         let nextRow = min(sidebarRow, messages.count - 1)
@@ -1232,9 +1245,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
       "\(message.accountName) · \(rowDateFormatter.string(from: message.receivedDate))"
     if loadBodyIfMissing {
       loadCachedSummary(for: message)
-      if let cachedURL = cachedBodyURLs[message.id]
-        ?? message.bodyPath.map({ URL(fileURLWithPath: $0) })
-      {
+      if let cachedURL = cachedBodyURL(for: message) {
         setBodyText("Loading message…")
         loadBodyText(from: cachedURL, for: message.id)
       } else if message.accountProvider == "gmail" && message.mailboxState != .trash {
@@ -1246,6 +1257,12 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         if message.mailboxState == .inbox, !message.preview.isEmpty {
           startSummary(for: message, readableBody: message.preview)
         }
+      }
+      if message.mailboxState == .inbox,
+        currentQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      {
+        consumedPrefetchMessageIDs.insert(message.id)
+        scheduleBodyPrefetch()
       }
     } else if message.mailboxState != .inbox {
       summaryTask?.cancel()
@@ -1361,6 +1378,57 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
   }
 
+  private func cachedBodyURL(for message: MessageSummary) -> URL? {
+    cachedBodyURLs[message.id]
+      ?? message.bodyPath.map { URL(fileURLWithPath: $0) }
+  }
+
+  private func scheduleBodyPrefetch() {
+    bodyPrefetchTask?.cancel()
+    bodyPrefetchTask = nil
+
+    guard currentQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      !ProcessInfo.processInfo.isLowPowerModeEnabled
+    else { return }
+
+    let candidates = BodyPrefetchPlanner.candidates(
+      from: messages,
+      excluding: consumedPrefetchMessageIDs
+    )
+    guard !candidates.isEmpty else { return }
+
+    bodyPrefetchTask = Task(priority: .utility) { [weak self, gmailSyncService] in
+      try? await Task.sleep(nanoseconds: 250_000_000)
+      guard !Task.isCancelled, let self else { return }
+
+      for message in candidates {
+        guard !Task.isCancelled, !ProcessInfo.processInfo.isLowPowerModeEnabled else { return }
+        if let cachedURL = self.cachedBodyURL(for: message) {
+          let exists = await Task.detached(priority: .utility) {
+            FileManager.default.fileExists(atPath: cachedURL.path)
+          }.value
+          if exists {
+            try? await self.store.touchCachedBody(messageID: message.id)
+            continue
+          }
+          self.cachedBodyURLs.removeValue(forKey: message.id)
+        }
+        do {
+          guard let url = try await gmailSyncService.prefetchBody(for: message) else {
+            return
+          }
+          self.cachedBodyURLs[message.id] = url
+          guard !Task.isCancelled else { return }
+          await Task.yield()
+        } catch is CancellationError {
+          return
+        } catch {
+          return
+        }
+      }
+    }
+  }
+
   private func cleanupTransientBodyCache(keeping messageID: Int64?) {
     let staleMessageIDs = transientBodyURLs.keys.filter { $0 != messageID }
     for staleMessageID in staleMessageIDs {
@@ -1381,6 +1449,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
           self.transientBodyURLs[message.id] = url
         }
         self.loadBodyText(from: url, for: message.id)
+        self.scheduleBodyPrefetch()
       } catch is CancellationError {
         return
       } catch {
@@ -1409,6 +1478,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
           readableBody = MIMETextExtractor.readableText(text)
           self.setBodyText(text.isEmpty ? "This message has no readable text." : text)
         }
+        try? await self.store.touchCachedBody(messageID: messageID)
         let preview = MessagePreview.make(from: readableBody)
         if !preview.isEmpty,
           (try? await self.store.savePreview(preview, for: messageID)) == true
@@ -1425,7 +1495,17 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
       } catch {
         guard !Task.isCancelled, let self, self.selectedMessageID == messageID else { return }
-        self.setBodyText("Unable to load this message.")
+        self.cachedBodyURLs.removeValue(forKey: messageID)
+        if let message = self.selectedMessage,
+          message.id == messageID,
+          message.accountProvider == "gmail",
+          message.mailboxState != .trash
+        {
+          self.setBodyText("Loading message…")
+          self.fetchBody(for: message)
+        } else {
+          self.setBodyText("Unable to load this message.")
+        }
       }
     }
   }
