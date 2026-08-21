@@ -7,6 +7,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 {
   private let store: MailStore
   private let gmailSyncService: GmailSyncService
+  private var bodyPrefetchNetworkMonitor: BodyPrefetchNetworkMonitor?
   private let openRouterKeyStore = OpenRouterAPIKeyStore()
   private let summaryService = OpenRouterSummaryService()
   private var messages: [MessageSummary] = []
@@ -109,6 +110,18 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     window.setFrameAutosaveName("FlitMainWindow")
 
     super.init(window: window)
+
+    bodyPrefetchNetworkMonitor = BodyPrefetchNetworkMonitor { [weak self] allowsPrefetch in
+      Task { @MainActor [weak self] in
+        guard let self else { return }
+        if allowsPrefetch {
+          self.scheduleBodyPrefetch()
+        } else {
+          self.bodyPrefetchTask?.cancel()
+          self.bodyPrefetchTask = nil
+        }
+      }
+    }
 
     splitController.addSplitViewItem(
       NSSplitViewItem(contentListWithViewController: makeInboxController()))
@@ -1388,7 +1401,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     bodyPrefetchTask = nil
 
     guard currentQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-      !ProcessInfo.processInfo.isLowPowerModeEnabled
+      !ProcessInfo.processInfo.isLowPowerModeEnabled,
+      bodyPrefetchNetworkMonitor?.allowsPrefetch == true
     else { return }
 
     let candidates = BodyPrefetchPlanner.candidates(
@@ -1402,7 +1416,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
       guard !Task.isCancelled, let self else { return }
 
       for message in candidates {
-        guard !Task.isCancelled, !ProcessInfo.processInfo.isLowPowerModeEnabled else { return }
+        guard !Task.isCancelled, !ProcessInfo.processInfo.isLowPowerModeEnabled,
+          self.bodyPrefetchNetworkMonitor?.allowsPrefetch == true
+        else { return }
         if let cachedURL = self.cachedBodyURL(for: message) {
           let exists = await Task.detached(priority: .utility) {
             FileManager.default.fileExists(atPath: cachedURL.path)
