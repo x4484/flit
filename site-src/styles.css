@@ -115,13 +115,6 @@ nav a { color: var(--ink); text-decoration: none; }
   padding-block: 8px 64px;
 }
 
-.hero-logo {
-  display: block;
-  width: 180px;
-  height: auto;
-  margin-block-end: 48px;
-}
-
 .hero h1 {
   max-width: 12ch;
   margin-block-end: 34px;
@@ -258,7 +251,6 @@ footer a { color: inherit; }
   nav { justify-content: flex-start; }
   .content { width: min(100% - 32px, 720px); padding-block: 44px 64px; }
   .hero { padding-block-end: 48px; }
-  .hero-logo { width: 150px; margin-block-end: 36px; }
   .feature-list article { grid-template-columns: 1fr; gap: 7px; }
 }
 
@@ -277,8 +269,7 @@ footer a { color: inherit; }
 
   .github-link { color: #07101f; background: #f8faff; }
   .github-link:hover { color: #07101f; background: #dfe8f8; }
-  .brand img,
-  .hero-logo { filter: invert(1) hue-rotate(180deg); }
+  .brand img { filter: invert(1) hue-rotate(180deg); }
   pre { background: #050b14; }
 }
 
