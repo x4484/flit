@@ -87,7 +87,17 @@ jobs:
           : "${GOOGLE_OAUTH_JSON_BASE64:?Missing GOOGLE_OAUTH_JSON_BASE64}"
           echo "$GOOGLE_OAUTH_JSON_BASE64" | base64 --decode > "$RUNNER_TEMP/GoogleOAuth.json"
           chmod 600 "$RUNNER_TEMP/GoogleOAuth.json"
-          plutil -lint "$RUNNER_TEMP/GoogleOAuth.json"
+          python3 - "$RUNNER_TEMP/GoogleOAuth.json" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          installed = json.loads(pathlib.Path(sys.argv[1]).read_text())["installed"]
+          required = {"client_id", "client_secret", "auth_uri", "token_uri", "redirect_uris"}
+          missing = sorted(key for key in required if not installed.get(key))
+          if missing:
+              raise SystemExit(f"OAuth JSON is missing required fields: {', '.join(missing)}")
+          PY
           echo "FLIT_GOOGLE_OAUTH_CONFIG=$RUNNER_TEMP/GoogleOAuth.json" >> "$GITHUB_ENV"
 
       - name: Test
