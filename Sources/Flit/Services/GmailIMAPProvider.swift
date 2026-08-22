@@ -34,9 +34,14 @@ actor GmailIMAPProvider: MailProvider {
   private let accountID: Int64
   private let email: String
   private let oauth: GoogleOAuthService
+  private struct SessionWaiter {
+    let id: UUID
+    let continuation: CheckedContinuation<Void, Error>
+  }
+
   private var activeTransport: IMAPTransport?
   private var sessionInUse = false
-  private var sessionWaiters: [CheckedContinuation<Void, Never>] = []
+  private var sessionWaiters: [SessionWaiter] = []
 
   init(accountID: Int64, email: String, oauth: GoogleOAuthService) {
     self.accountID = accountID
@@ -45,7 +50,7 @@ actor GmailIMAPProvider: MailProvider {
   }
 
   func syncInbox(from cursor: SyncCursor?) async throws -> SyncResult {
-    await acquireSession()
+    try await acquireSession()
     defer { releaseSession() }
     try Task.checkCancellation()
     let transport = try await authenticatedTransport()
@@ -98,7 +103,7 @@ actor GmailIMAPProvider: MailProvider {
       return InboxReconciliationResult(messages: [], removals: [])
     }
 
-    await acquireSession()
+    try await acquireSession()
     defer { releaseSession() }
     try Task.checkCancellation()
     let transport = try await authenticatedTransport()
@@ -204,7 +209,7 @@ actor GmailIMAPProvider: MailProvider {
 
   func fetchOlderInbox(beforeRemoteUID: Int64, limit: Int) async throws -> [NewMessage] {
     guard (1...Int64(UInt32.max)).contains(beforeRemoteUID), limit > 0 else { return [] }
-    await acquireSession()
+    try await acquireSession()
     defer { releaseSession() }
     try Task.checkCancellation()
     let transport = try await authenticatedTransport()
@@ -234,7 +239,7 @@ actor GmailIMAPProvider: MailProvider {
 
   func searchInbox(query: String, limit: Int) async throws -> [NewMessage] {
     guard let inboxCommand = Self.inboxSearchCommand(query: query), limit > 0 else { return [] }
-    await acquireSession()
+    try await acquireSession()
     defer { releaseSession() }
     try Task.checkCancellation()
     let transport = try await authenticatedTransport()
@@ -296,7 +301,7 @@ actor GmailIMAPProvider: MailProvider {
       limit > 0
     else { return [] }
 
-    await acquireSession()
+    try await acquireSession()
     defer { releaseSession() }
     try Task.checkCancellation()
     let transport = try await authenticatedTransport()
@@ -340,7 +345,7 @@ actor GmailIMAPProvider: MailProvider {
   }
 
   func fetchPlainTextBody(remoteID: String) async throws -> URL {
-    await acquireSession()
+    try await acquireSession()
     defer { releaseSession() }
     try Task.checkCancellation()
     guard !remoteID.isEmpty, remoteID.allSatisfy(\.isNumber) else {
@@ -371,7 +376,7 @@ actor GmailIMAPProvider: MailProvider {
     remoteUID: Int64,
     mailboxState: MailboxState = .inbox
   ) async throws -> URL {
-    await acquireSession()
+    try await acquireSession()
     defer { releaseSession() }
     try Task.checkCancellation()
     guard !remoteID.isEmpty, remoteID.allSatisfy(\.isNumber) else {
@@ -408,7 +413,7 @@ actor GmailIMAPProvider: MailProvider {
   func applyPendingOperations(_ operations: [PendingMailOperation]) async throws
     -> GmailOperationBatchResult
   {
-    await acquireSession()
+    try await acquireSession()
     defer { releaseSession() }
     try Task.checkCancellation()
     guard !operations.isEmpty else {
@@ -515,21 +520,37 @@ actor GmailIMAPProvider: MailProvider {
     )
   }
 
-  private func acquireSession() async {
+  private func acquireSession() async throws {
     if !sessionInUse {
       sessionInUse = true
       return
     }
-    await withCheckedContinuation { continuation in
-      sessionWaiters.append(continuation)
+
+    let waiterID = UUID()
+    try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation {
+        (continuation: CheckedContinuation<Void, Error>) in
+        if Task.isCancelled {
+          continuation.resume(throwing: CancellationError())
+        } else {
+          sessionWaiters.append(SessionWaiter(id: waiterID, continuation: continuation))
+        }
+      }
+    } onCancel: {
+      Task { await self.cancelSessionWaiter(waiterID) }
     }
+  }
+
+  private func cancelSessionWaiter(_ waiterID: UUID) {
+    guard let index = sessionWaiters.firstIndex(where: { $0.id == waiterID }) else { return }
+    sessionWaiters.remove(at: index).continuation.resume(throwing: CancellationError())
   }
 
   private func releaseSession() {
     if sessionWaiters.isEmpty {
       sessionInUse = false
     } else {
-      sessionWaiters.removeFirst().resume()
+      sessionWaiters.removeFirst().continuation.resume()
     }
   }
 

@@ -1,11 +1,21 @@
 import Foundation
 
+enum GmailSyncServiceError: Error, LocalizedError {
+  case bodyFetchTimedOut
+
+  var errorDescription: String? {
+    "Gmail took too long to return this message."
+  }
+}
+
 actor GmailSyncService {
+  private static let bodyFetchTimeoutNanoseconds: UInt64 = 15_000_000_000
   private let store: MailStore
   private var providers: [Int64: GmailIMAPProvider] = [:]
   private var exhaustedOlderAccounts: Set<Int64> = []
   private var completedRemoteSearches: Set<String> = []
   private var bodyFetchTasks: [Int64: Task<URL, Error>] = [:]
+  private var speculativeBodyFetchIDs: Set<Int64> = []
   private var demandBodyFetchCount = 0
   private var isSyncing = false
 
@@ -126,32 +136,79 @@ actor GmailSyncService {
   func fetchBody(for message: MessageSummary) async throws -> URL {
     demandBodyFetchCount += 1
     defer { demandBodyFetchCount -= 1 }
-    return try await sharedBodyFetch(for: message)
+
+    cancelSpeculativeBodyFetches(except: message.id)
+    do {
+      return try await sharedBodyFetch(for: message, speculative: false)
+    } catch is CancellationError {
+      throw CancellationError()
+    } catch {
+      let shouldRetry = error is IMAPTransportError || error is GmailSyncServiceError
+      guard shouldRetry else { throw error }
+      try Task.checkCancellation()
+      return try await sharedBodyFetch(for: message, speculative: false)
+    }
   }
 
   func prefetchBody(for message: MessageSummary) async throws -> URL? {
     guard message.accountProvider == "gmail", message.mailboxState == .inbox,
       demandBodyFetchCount == 0
     else { return nil }
-    return try await sharedBodyFetch(for: message)
+    return try await sharedBodyFetch(for: message, speculative: true)
   }
 
-  private func sharedBodyFetch(for message: MessageSummary) async throws -> URL {
+  private func sharedBodyFetch(for message: MessageSummary, speculative: Bool) async throws
+    -> URL
+  {
     if let existingTask = bodyFetchTasks[message.id] {
+      if !speculative {
+        speculativeBodyFetchIDs.remove(message.id)
+      }
       return try await existingTask.value
     }
 
     let task = Task { [self] in
-      try await performBodyFetch(for: message)
+      try await Self.withBodyFetchDeadline {
+        try await self.performBodyFetch(for: message)
+      }
     }
     bodyFetchTasks[message.id] = task
+    if speculative {
+      speculativeBodyFetchIDs.insert(message.id)
+    }
     do {
       let url = try await task.value
       bodyFetchTasks.removeValue(forKey: message.id)
+      speculativeBodyFetchIDs.remove(message.id)
       return url
     } catch {
       bodyFetchTasks.removeValue(forKey: message.id)
+      speculativeBodyFetchIDs.remove(message.id)
       throw error
+    }
+  }
+
+  private func cancelSpeculativeBodyFetches(except demandedMessageID: Int64) {
+    for messageID in speculativeBodyFetchIDs where messageID != demandedMessageID {
+      bodyFetchTasks[messageID]?.cancel()
+    }
+  }
+
+  static func withBodyFetchDeadline<T: Sendable>(
+    nanoseconds: UInt64? = nil,
+    operation: @escaping @Sendable () async throws -> T
+  ) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+      group.addTask(operation: operation)
+      group.addTask {
+        try await Task.sleep(nanoseconds: nanoseconds ?? bodyFetchTimeoutNanoseconds)
+        throw GmailSyncServiceError.bodyFetchTimedOut
+      }
+      defer { group.cancelAll() }
+      guard let result = try await group.next() else {
+        throw GmailSyncServiceError.bodyFetchTimedOut
+      }
+      return result
     }
   }
 
