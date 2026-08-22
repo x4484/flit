@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DOCS = ROOT / "docs"
 OUTPUT = ROOT / "site"
 PAGES = ["index.md", "installation.md", "privacy.md", "terms.md", "support.md"]
-SITE_URL = os.environ.get("FLIT_SITE_URL", "").rstrip("/")
+SITE_URL = os.environ.get("FLIT_SITE_URL", "https://www.flit.wtf").rstrip("/")
 
 
 def parse_document(path: Path) -> tuple[dict[str, str], str]:
@@ -52,7 +52,7 @@ def render_page(title: str, body: str, permalink: str) -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Flit is a fast, local-first native mail client for macOS.">
+  <meta name="description" content="Flit is a fast native email client for reading, searching, organizing, and replying to Gmail on macOS.">
   <meta name="theme-color" content="#07101f">
   {canonical}
   <title>{html.escape(document_title)}</title>
