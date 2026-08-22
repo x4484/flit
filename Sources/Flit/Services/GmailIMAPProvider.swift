@@ -4,7 +4,6 @@ enum GmailIMAPProviderError: Error, LocalizedError {
   case featureUnavailable
   case messageNotFound
   case missingBodyData
-  case mailboxChanged
 
   var errorDescription: String? {
     switch self {
@@ -14,8 +13,6 @@ enum GmailIMAPProviderError: Error, LocalizedError {
       return "The message is no longer available in Gmail."
     case .missingBodyData:
       return "Gmail did not return a readable message body."
-    case .mailboxChanged:
-      return "The Gmail inbox changed before the action could be applied."
     }
   }
 }
@@ -427,22 +424,38 @@ actor GmailIMAPProvider: MailProvider {
       var succeededIDs: [Int64] = []
 
       for operation in operations {
-        guard operation.uidValidity == nil || operation.uidValidity == mailbox.uidValidity else {
-          throw GmailIMAPProviderError.mailboxChanged
-        }
         do {
+          let remoteUID: Int64
+          if operation.uidValidity == nil || operation.uidValidity == mailbox.uidValidity {
+            remoteUID = operation.remoteUID
+          } else {
+            guard !operation.remoteID.isEmpty, operation.remoteID.allSatisfy(\.isNumber) else {
+              throw GmailIMAPProviderError.messageNotFound
+            }
+            let search = try await transport.execute(
+              "UID SEARCH X-GM-MSGID \(operation.remoteID)")
+            guard let resolvedUID = GmailIMAPParser.searchedUIDs(
+              from: search,
+              greaterThan: 0
+            ).first else {
+              succeededIDs.append(operation.id)
+              continue
+            }
+            remoteUID = resolvedUID
+          }
+
           switch operation.kind {
           case .markRead:
             _ = try await transport.execute(
-              "UID STORE \(operation.remoteUID) +FLAGS.SILENT (\\Seen)")
+              "UID STORE \(remoteUID) +FLAGS.SILENT (\\Seen)")
           case .archive:
             guard let command = Self.mailboxMoveCommand(
-              kind: .archive, remoteUID: operation.remoteUID)
+              kind: .archive, remoteUID: remoteUID)
             else { throw GmailIMAPProviderError.featureUnavailable }
             _ = try await transport.execute(command)
           case .trash:
             guard let command = Self.mailboxMoveCommand(
-              kind: .trash, remoteUID: operation.remoteUID)
+              kind: .trash, remoteUID: remoteUID)
             else { throw GmailIMAPProviderError.featureUnavailable }
             _ = try await transport.execute(command)
           case .send:

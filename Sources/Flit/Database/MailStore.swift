@@ -131,11 +131,11 @@ actor MailStore {
     let statement = try database.prepare(
       """
       SELECT p.id, p.message_id, m.account_id, a.email, m.remote_id,
-             m.remote_uid, m.uid_validity, p.operation, p.attempts
+             p.remote_uid, p.uid_validity, p.operation, p.attempts
       FROM pending_operations p
       JOIN messages m ON m.id = p.message_id
       JOIN accounts a ON a.id = m.account_id
-      WHERE m.account_id = ? AND a.provider = 'gmail' AND m.remote_uid IS NOT NULL
+      WHERE m.account_id = ? AND a.provider = 'gmail' AND p.remote_uid IS NOT NULL
       ORDER BY p.id
       LIMIT ?
       """)
@@ -709,10 +709,24 @@ actor MailStore {
   }
 
   private func enqueue(operation: PendingOperationKind, messageID: Int64) throws {
+    let location = try database.prepare(
+      """
+      SELECT remote_uid, uid_validity
+      FROM message_locations
+      WHERE message_id = ? AND mailbox_state = ?
+      """)
+    try location.bind(messageID, at: 1)
+    try location.bind(MailboxState.inbox.rawValue, at: 2)
+    guard try location.step() else {
+      throw DatabaseError.step("Cannot queue a Gmail operation without an Inbox location")
+    }
+
     let statement = try database.prepare(
       """
-      INSERT INTO pending_operations (message_id, operation, created_at)
-      SELECT ?, ?, ?
+      INSERT INTO pending_operations (
+        message_id, operation, remote_uid, uid_validity, created_at
+      )
+      SELECT ?, ?, ?, ?, ?
       WHERE NOT EXISTS (
         SELECT 1 FROM pending_operations
         WHERE message_id = ? AND operation = ?
@@ -720,9 +734,11 @@ actor MailStore {
       """)
     try statement.bind(messageID, at: 1)
     try statement.bind(operation.rawValue, at: 2)
-    try statement.bind(Int64(Date().timeIntervalSince1970), at: 3)
-    try statement.bind(messageID, at: 4)
-    try statement.bind(operation.rawValue, at: 5)
+    try statement.bind(location.integer(at: 0), at: 3)
+    try statement.bind(location.optionalInteger(at: 1), at: 4)
+    try statement.bind(Int64(Date().timeIntervalSince1970), at: 5)
+    try statement.bind(messageID, at: 6)
+    try statement.bind(operation.rawValue, at: 7)
     try statement.step()
   }
 
@@ -854,6 +870,8 @@ actor MailStore {
           id INTEGER PRIMARY KEY,
           message_id INTEGER REFERENCES messages(id) ON DELETE CASCADE,
           operation INTEGER NOT NULL,
+          remote_uid INTEGER,
+          uid_validity INTEGER,
           payload BLOB,
           attempts INTEGER NOT NULL DEFAULT 0,
           created_at INTEGER NOT NULL
@@ -886,6 +904,37 @@ actor MailStore {
           VALUES (new.id, new.sender, new.recipients, new.subject, new.preview);
       END;
       """)
+
+    let pendingColumns = try database.prepare("PRAGMA table_info(pending_operations)")
+    var pendingColumnNames: Set<String> = []
+    while try pendingColumns.step() {
+      pendingColumnNames.insert(pendingColumns.text(at: 1))
+    }
+    if !pendingColumnNames.contains("remote_uid") {
+      try database.execute("ALTER TABLE pending_operations ADD COLUMN remote_uid INTEGER")
+    }
+    if !pendingColumnNames.contains("uid_validity") {
+      try database.execute("ALTER TABLE pending_operations ADD COLUMN uid_validity INTEGER")
+    }
+    try database.execute(
+      """
+      UPDATE pending_operations
+      SET remote_uid = (
+            SELECT l.remote_uid
+            FROM message_locations l
+            WHERE l.message_id = pending_operations.message_id
+              AND l.mailbox_state = 0
+          ),
+          uid_validity = (
+            SELECT l.uid_validity
+            FROM message_locations l
+            WHERE l.message_id = pending_operations.message_id
+              AND l.mailbox_state = 0
+          )
+      WHERE remote_uid IS NULL
+      """)
+    try database.execute(
+      "DELETE FROM pending_operations WHERE remote_uid IS NULL")
 
     let columns = try database.prepare("PRAGMA table_info(messages)")
     var columnNames: Set<String> = []

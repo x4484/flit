@@ -17,6 +17,7 @@ actor GmailSyncService {
   private var bodyFetchTasks: [Int64: Task<URL, Error>] = [:]
   private var speculativeBodyFetchIDs: Set<Int64> = []
   private var demandBodyFetchCount = 0
+  private var flushingAccountIDs: Set<Int64> = []
   private var isSyncing = false
 
   init(store: MailStore) {
@@ -251,7 +252,6 @@ actor GmailSyncService {
   }
 
   func flushPendingOperations() async throws -> Int {
-    guard !isSyncing else { return 0 }
     let accounts = try await store.accounts(provider: "gmail")
     guard !accounts.isEmpty else { return 0 }
 
@@ -309,16 +309,24 @@ actor GmailSyncService {
     for account: MailAccount,
     provider: GmailIMAPProvider
   ) async throws -> Int {
-    let operations = try await store.pendingOperations(accountID: account.id, limit: 100)
-    guard !operations.isEmpty else { return 0 }
+    guard flushingAccountIDs.insert(account.id).inserted else { return 0 }
+    defer { flushingAccountIDs.remove(account.id) }
 
-    let result = try await provider.applyPendingOperations(operations)
-    for operationID in result.succeededIDs {
-      try await store.completePendingOperation(id: operationID)
+    var completedCount = 0
+    while true {
+      let operations = try await store.pendingOperations(accountID: account.id, limit: 100)
+      guard !operations.isEmpty else { return completedCount }
+
+      let result = try await provider.applyPendingOperations(operations)
+      for operationID in result.succeededIDs {
+        try await store.completePendingOperation(id: operationID)
+      }
+      completedCount += result.succeededIDs.count
+      if let failedID = result.failedID {
+        try await store.recordPendingOperationFailure(id: failedID)
+        return completedCount
+      }
+      guard !result.succeededIDs.isEmpty else { return completedCount }
     }
-    if let failedID = result.failedID {
-      try await store.recordPendingOperationFailure(id: failedID)
-    }
-    return result.succeededIDs.count
   }
 }

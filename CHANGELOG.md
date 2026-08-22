@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0-beta.3 — 2026-08-21
+
+### Fixed
+
+- Archive, trash, and read operations now snapshot the message’s Inbox UID instead of following mutable All Mail thread metadata
+- Existing queued operations are migrated to their preserved Inbox locations so one stale operation cannot block the queue
+- UIDVALIDITY changes now re-resolve messages by Gmail message ID before applying an operation
+- Pending operations drain safely during synchronization rather than being skipped behind a long-running sync
+
 ## 0.1.0-beta.2 — 2026-08-21
 
 ### Fixed

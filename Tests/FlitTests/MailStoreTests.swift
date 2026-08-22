@@ -578,6 +578,109 @@ struct MailStoreTests {
   }
 
   @Test
+  func queuedOperationKeepsItsInboxLocationAfterThreadHydration() async throws {
+    let context = try await makeStore(provider: "gmail")
+    defer { context.cleanup() }
+
+    let messageID = try await context.store.addMessage(
+      NewMessage(
+        accountID: context.accountID,
+        remoteID: "stable-operation-location",
+        remoteUID: 401,
+        uidValidity: 22,
+        receivedAt: 1_700_000_000,
+        sender: "Sender",
+        recipients: "me@example.com",
+        cc: "",
+        internetMessageID: "",
+        subject: "Stable Inbox UID",
+        preview: "",
+        isRead: false,
+        mailboxState: .inbox,
+        bodyPath: nil
+      ))
+    try await context.store.archive(messageID: messageID)
+
+    _ = try await context.store.addMessage(
+      NewMessage(
+        accountID: context.accountID,
+        remoteID: "stable-operation-location",
+        remoteUID: 901,
+        uidValidity: 44,
+        receivedAt: 1_700_000_000,
+        sender: "Sender",
+        recipients: "me@example.com",
+        cc: "",
+        internetMessageID: "",
+        subject: "Stable Inbox UID",
+        preview: "",
+        isRead: false,
+        mailboxState: .archive,
+        bodyPath: nil
+      ))
+
+    let operation = try #require(
+      try await context.store.pendingOperations(accountID: context.accountID).first)
+    #expect(operation.remoteUID == 401)
+    #expect(operation.uidValidity == 22)
+  }
+
+  @Test
+  func legacyPendingOperationsBackfillTheirInboxLocation() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("FlitPendingMigrationTests-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let path = directory.appendingPathComponent("flit.sqlite3").path
+    do {
+      let legacy = try SQLiteDatabase(path: path)
+      try legacy.execute(
+        """
+        CREATE TABLE accounts (
+          id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE,
+          provider TEXT NOT NULL, uid_validity INTEGER, highest_uid INTEGER,
+          highest_modseq TEXT
+        );
+        CREATE TABLE messages (
+          id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL,
+          remote_id TEXT NOT NULL, remote_uid INTEGER, uid_validity INTEGER,
+          received_at INTEGER NOT NULL, sender TEXT NOT NULL DEFAULT '',
+          recipients TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL DEFAULT '',
+          preview TEXT NOT NULL DEFAULT '', flags INTEGER NOT NULL DEFAULT 0,
+          mailbox_state INTEGER NOT NULL DEFAULT 0, body_path TEXT,
+          UNIQUE(account_id, remote_id)
+        );
+        CREATE TABLE message_locations (
+          message_id INTEGER NOT NULL, mailbox_state INTEGER NOT NULL,
+          remote_uid INTEGER NOT NULL, uid_validity INTEGER,
+          PRIMARY KEY(message_id, mailbox_state)
+        );
+        CREATE TABLE pending_operations (
+          id INTEGER PRIMARY KEY, message_id INTEGER, operation INTEGER NOT NULL,
+          payload BLOB, attempts INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL
+        );
+        INSERT INTO accounts (id, name, email, provider)
+        VALUES (1, 'Gmail', 'me@example.com', 'gmail');
+        INSERT INTO messages (
+          id, account_id, remote_id, remote_uid, uid_validity, received_at,
+          mailbox_state
+        ) VALUES (1, 1, 'legacy-pending', 999, 44, 1700000000, 1);
+        INSERT INTO message_locations (message_id, mailbox_state, remote_uid, uid_validity)
+        VALUES (1, 0, 401, 22);
+        INSERT INTO pending_operations (message_id, operation, created_at)
+        VALUES (1, 0, 1700000000);
+        """)
+    }
+
+    let store = try MailStore(path: path)
+    let operation = try #require(try await store.pendingOperations(accountID: 1).first)
+    #expect(operation.remoteUID == 401)
+    #expect(operation.uidValidity == 22)
+  }
+
+  @Test
   func ccMigrationRefreshesGmailMetadata() async throws {
     let directory = FileManager.default.temporaryDirectory
       .appendingPathComponent("FlitMigrationTests-\(UUID().uuidString)", isDirectory: true)
