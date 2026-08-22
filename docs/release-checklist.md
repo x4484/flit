@@ -12,7 +12,7 @@ Flit's public build must be signed, notarized, and backed by an approved Google 
 
 ## 2. Public website and domain
 
-- Production website: `https://www.flit.wtf/`
+- Preview deployment: `https://flit-pied.vercel.app/`
 - Add the purchased custom domain to the Vercel `flit` project.
 - Set `FLIT_SITE_URL=https://<domain>` and rebuild `site/` so canonical URLs use the domain.
 - Verify the domain in Google Search Console.

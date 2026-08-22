@@ -4,8 +4,7 @@ title: Flit
 ---
 
 <section class="hero">
-  <h1>Flit is a fast and lightweight email client for your Mac</h1>
-  <p class="purpose-note">Connect Gmail to read, search, organize, archive, and reply to email in a native macOS app.</p>
+  <h1>Fast and lightweight email client for your Mac</h1>
   <div class="hero-actions">
     <a class="download-button" href="/download/">Download for macOS</a>
     <a class="source-link" href="https://github.com/x4484/flit">View on GitHub</a>
