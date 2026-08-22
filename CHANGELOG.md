@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.1.0 — Unreleased
+## 0.1.0-beta.1 — 2026-08-21
 
-First public beta candidate.
+First public beta.
 
 ### Included
 
@@ -22,4 +22,4 @@ First public beta candidate.
 - Gmail is the only connected provider
 - New-message composition and attachments are not complete
 - There is no offline SMTP outbox or automatic updater
-- Public Gmail access is gated on Google OAuth production approval
+- Google OAuth verification is incomplete; new users see Google's unverified-app warning, and the client is subject to the 100-new-user cap
