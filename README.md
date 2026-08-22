@@ -3,9 +3,9 @@
 </p>
 
 <p align="center">
-  <a href="https://www.flit.wtf/">Website</a> ·
+  <a href="https://flit-pied.vercel.app/">Website</a> ·
   <a href="https://github.com/x4484/flit/releases">Downloads</a> ·
-  <a href="https://www.flit.wtf/privacy/">Privacy</a>
+  <a href="https://flit-pied.vercel.app/privacy/">Privacy</a>
 </p>
 
 Flit is an experimental, extremely lightweight native macOS mail client focused on one job: triaging mail quickly across accounts.
@@ -38,7 +38,7 @@ These are targets, not yet published benchmark results.
 
 Signed and notarized universal downloads will appear on [GitHub Releases](https://github.com/x4484/flit/releases) after the public OAuth consent screen is approved. Flit requires macOS 13 or newer and supports Apple silicon and Intel Macs.
 
-See the [installation guide](https://www.flit.wtf/installation/) for release installation and data-removal instructions.
+See the [installation guide](https://flit-pied.vercel.app/installation/) for release installation and data-removal instructions.
 
 ## Build from source
 
