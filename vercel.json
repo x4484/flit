@@ -7,7 +7,7 @@
   "redirects": [
     {
       "source": "/download/",
-      "destination": "https://github.com/x4484/flit/releases/download/v0.1.0-beta.1/Flit-0.1.0-beta.1.dmg",
+      "destination": "https://github.com/x4484/flit/releases/download/v0.1.0-beta.2/Flit-0.1.0-beta.2.dmg",
       "permanent": false
     }
   ],

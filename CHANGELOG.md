@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-beta.2 — 2026-08-21
+
+### Fixed
+
+- Message bodies no longer remain indefinitely on “Loading message…” when Gmail stalls or a cached IMAP connection goes stale
+- Opening a message now cancels unrelated speculative prefetches, retries one transient IMAP failure, and enforces bounded connection, command, and body-fetch deadlines
+- Cancelled Gmail session waiters now leave the queue immediately instead of delaying selected-message work
+
 ## 0.1.0-beta.1 — 2026-08-21
 
 First public beta.

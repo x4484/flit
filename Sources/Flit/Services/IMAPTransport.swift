@@ -70,11 +70,13 @@ final class IMAPTransport: @unchecked Sendable {
   private static let maximumLineBytes = 1_048_576
   private static let maximumLiteralBytes = 1_048_576
   private static let maximumResponsesPerCommand = 2_048
+  private static let operationTimeoutNanoseconds: UInt64 = 20_000_000_000
 
   private let host: NWEndpoint.Host
   private let port: NWEndpoint.Port
   private let queue = DispatchQueue(label: "com.ranihaddad.flit.imap")
   private let executionLock = NSLock()
+  private let connectionLock = NSLock()
   private var commandInProgress = false
   private var connection: NWConnection?
   private var readBuffer = Data()
@@ -90,87 +92,94 @@ final class IMAPTransport: @unchecked Sendable {
 
   func connect() async throws -> String {
     let connection = NWConnection(host: host, port: port, using: .tls)
-    self.connection = connection
+    setConnection(connection)
 
-    try await withCheckedThrowingContinuation {
-      (continuation: CheckedContinuation<Void, Error>) in
-      let gate = IMAPConnectionGate()
-      connection.stateUpdateHandler = { state in
-        switch state {
-        case .ready:
-          gate.resume(continuation, with: .success(()))
-        case .failed(let error):
-          gate.resume(
-            continuation,
-            with: .failure(IMAPTransportError.connectionFailed(error.localizedDescription))
-          )
-        case .cancelled:
-          gate.resume(continuation, with: .failure(IMAPTransportError.connectionClosed))
-        default:
-          break
+    return try await withOperationDeadline {
+      try await withCheckedThrowingContinuation {
+        (continuation: CheckedContinuation<Void, Error>) in
+        let gate = IMAPConnectionGate()
+        connection.stateUpdateHandler = { state in
+          switch state {
+          case .ready:
+            gate.resume(continuation, with: .success(()))
+          case .failed(let error):
+            gate.resume(
+              continuation,
+              with: .failure(IMAPTransportError.connectionFailed(error.localizedDescription))
+            )
+          case .cancelled:
+            gate.resume(continuation, with: .failure(IMAPTransportError.connectionClosed))
+          default:
+            break
+          }
         }
+        connection.start(queue: self.queue)
       }
-      connection.start(queue: queue)
-    }
 
-    let greeting = try await readLine()
-    guard greeting.hasPrefix("* OK") else {
-      throw IMAPTransportError.connectionFailed(greeting)
+      let greeting = try await self.readLine()
+      guard greeting.hasPrefix("* OK") else {
+        throw IMAPTransportError.connectionFailed(greeting)
+      }
+      return greeting
     }
-    return greeting
   }
 
   func execute(_ command: String, answerContinuationWithEmptyLine: Bool = false) async throws
     -> IMAPCommandResult
   {
-    guard beginCommand() else { throw IMAPTransportError.concurrentCommand }
-    defer { endCommand() }
+    try await withOperationDeadline {
+      guard self.beginCommand() else { throw IMAPTransportError.concurrentCommand }
+      defer { self.endCommand() }
 
-    guard !command.contains("\r"), !command.contains("\n") else {
+      guard !command.contains("\r"), !command.contains("\n") else {
+        throw IMAPTransportError.malformedResponse
+      }
+
+      let tag = String(format: "A%04d", self.nextTag)
+      self.nextTag += 1
+      try await self.send("\(tag) \(command)\r\n")
+
+      var responses: [IMAPResponse] = []
+      responses.reserveCapacity(64)
+
+      while responses.count < Self.maximumResponsesPerCommand {
+        try Task.checkCancellation()
+        let line = try await self.readLine()
+        if line.hasPrefix("+") && answerContinuationWithEmptyLine {
+          try await self.send("\r\n")
+          responses.append(IMAPResponse(line: line, literal: nil))
+          continue
+        }
+
+        var responseLine = line
+        var literal: Data?
+        if let literalByteCount = Self.trailingLiteralByteCount(in: line) {
+          guard literalByteCount <= Self.maximumLiteralBytes else {
+            throw IMAPTransportError.literalTooLarge(literalByteCount)
+          }
+          literal = try await self.readExactly(literalByteCount)
+          responseLine += " " + (try await self.readLine())
+        }
+        responses.append(IMAPResponse(line: responseLine, literal: literal))
+
+        if line.hasPrefix("\(tag) ") {
+          guard line.uppercased().hasPrefix("\(tag) OK") else {
+            throw IMAPTransportError.commandFailed(line)
+          }
+          return IMAPCommandResult(responses: responses)
+        }
+      }
+
       throw IMAPTransportError.malformedResponse
     }
-
-    let tag = String(format: "A%04d", nextTag)
-    nextTag += 1
-    try await send("\(tag) \(command)\r\n")
-
-    var responses: [IMAPResponse] = []
-    responses.reserveCapacity(64)
-
-    while responses.count < Self.maximumResponsesPerCommand {
-      let line = try await readLine()
-      if line.hasPrefix("+") && answerContinuationWithEmptyLine {
-        try await send("\r\n")
-        responses.append(IMAPResponse(line: line, literal: nil))
-        continue
-      }
-
-      var responseLine = line
-      var literal: Data?
-      if let literalByteCount = Self.trailingLiteralByteCount(in: line) {
-        guard literalByteCount <= Self.maximumLiteralBytes else {
-          throw IMAPTransportError.literalTooLarge(literalByteCount)
-        }
-        literal = try await readExactly(literalByteCount)
-        responseLine += " " + (try await readLine())
-      }
-      responses.append(IMAPResponse(line: responseLine, literal: literal))
-
-      if line.hasPrefix("\(tag) ") {
-        guard line.uppercased().hasPrefix("\(tag) OK") else {
-          throw IMAPTransportError.commandFailed(line)
-        }
-        return IMAPCommandResult(responses: responses)
-      }
-    }
-
-    throw IMAPTransportError.malformedResponse
   }
 
   func close() {
+    connectionLock.lock()
+    let connection = self.connection
+    self.connection = nil
+    connectionLock.unlock()
     connection?.cancel()
-    connection = nil
-    readBuffer.removeAll(keepingCapacity: false)
   }
 
   private func beginCommand() -> Bool {
@@ -188,7 +197,7 @@ final class IMAPTransport: @unchecked Sendable {
   }
 
   private func send(_ string: String) async throws {
-    guard let connection else { throw IMAPTransportError.connectionClosed }
+    guard let connection = currentConnection() else { throw IMAPTransportError.connectionClosed }
     try await withCheckedThrowingContinuation {
       (continuation: CheckedContinuation<Void, Error>) in
       connection.send(
@@ -232,7 +241,7 @@ final class IMAPTransport: @unchecked Sendable {
   }
 
   private func receiveChunk() async throws -> Data {
-    guard let connection else { throw IMAPTransportError.connectionClosed }
+    guard let connection = currentConnection() else { throw IMAPTransportError.connectionClosed }
     return try await withCheckedThrowingContinuation {
       (continuation: CheckedContinuation<Data, Error>) in
       connection.receive(minimumIncompleteLength: 1, maximumLength: 16_384) {
@@ -248,6 +257,39 @@ final class IMAPTransport: @unchecked Sendable {
           continuation.resume(throwing: IMAPTransportError.connectionClosed)
         }
       }
+    }
+  }
+
+  private func setConnection(_ connection: NWConnection) {
+    connectionLock.lock()
+    self.connection = connection
+    connectionLock.unlock()
+  }
+
+  private func currentConnection() -> NWConnection? {
+    connectionLock.lock()
+    defer { connectionLock.unlock() }
+    return connection
+  }
+
+  private func withOperationDeadline<T: Sendable>(
+    _ operation: @escaping @Sendable () async throws -> T
+  ) async throws -> T {
+    let deadline = Task { [weak self] in
+      do {
+        try await Task.sleep(nanoseconds: Self.operationTimeoutNanoseconds)
+      } catch {
+        return
+      }
+      guard !Task.isCancelled else { return }
+      self?.close()
+    }
+    defer { deadline.cancel() }
+
+    return try await withTaskCancellationHandler {
+      try await operation()
+    } onCancel: {
+      self.close()
     }
   }
 
