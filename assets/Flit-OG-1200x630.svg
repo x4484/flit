@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title description">
+  <title id="title">Flit</title>
+  <desc id="description">Fast and lightweight email client for your Mac.</desc>
+  <rect width="1200" height="630" fill="#07101F"/>
+  <rect width="12" height="630" fill="#155EF7"/>
+  <text x="76" y="104" fill="#F8FAFF" font-family="Arial" font-size="30" font-weight="700" letter-spacing="7">FLIT</text>
+  <text x="76" y="238" fill="#F8FAFF" font-family="Arial" font-size="56" font-weight="650" letter-spacing="-1.6">
+    <tspan x="76" dy="0">Fast and lightweight</tspan>
+    <tspan x="76" dy="68">email client for</tspan>
+    <tspan x="76" dy="68">your Mac</tspan>
+  </text>
+  <text x="76" y="554" fill="#AEB8C7" font-family="Arial" font-size="24" font-weight="500">flit.wtf</text>
+  <image x="590" y="5" width="620" height="620" xlink:href="Flit-AppIcon-1024.png" preserveAspectRatio="xMidYMid meet"/>
+</svg>

@@ -47,6 +47,10 @@ def render_page(title: str, body: str, permalink: str) -> str:
         if title == "Flit"
         else f"{title} · Flit"
     )
+    social_origin = SITE_URL or "https://www.flit.wtf"
+    social_url = html.escape(social_origin + permalink)
+    social_image = html.escape(social_origin + "/assets/og.png")
+    social_description = "Fast and lightweight email client for your Mac."
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -54,6 +58,20 @@ def render_page(title: str, body: str, permalink: str) -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Flit is a fast, local-first native mail client for macOS.">
   <meta name="theme-color" content="#07101f">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Flit">
+  <meta property="og:title" content="{html.escape(document_title)}">
+  <meta property="og:description" content="{social_description}">
+  <meta property="og:url" content="{social_url}">
+  <meta property="og:image" content="{social_image}">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Flit — fast and lightweight email client for your Mac">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="{html.escape(document_title)}">
+  <meta name="twitter:description" content="{social_description}">
+  <meta name="twitter:image" content="{social_image}">
+  <meta name="twitter:image:alt" content="Flit — fast and lightweight email client for your Mac">
   {canonical}
   <title>{html.escape(document_title)}</title>
   <link rel="icon" href="/assets/icon.png" type="image/png">
@@ -97,6 +115,7 @@ def main() -> None:
 
     shutil.copy2(ROOT / "assets" / "FLIT-logo.png", OUTPUT / "assets" / "logo.png")
     shutil.copy2(ROOT / "assets" / "Flit-AppIcon-1024.png", OUTPUT / "assets" / "icon.png")
+    shutil.copy2(ROOT / "assets" / "Flit-OG-1200x630.png", OUTPUT / "assets" / "og.png")
     shutil.copy2(ROOT / "site-src" / "styles.css", OUTPUT / "styles.css")
     print(f"Built {OUTPUT}")
 
